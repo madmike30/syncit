@@ -1,0 +1,93 @@
+{
+  // SyncIt configuration file
+  // Location: %APPDATA%\SyncIt\syncit.json
+  //
+  // IMPORTANT: clientId and clientSecret are NOT stored here.
+  // Run SyncIt.Tray.exe to enter them — they are saved to Windows Credential Manager.
+  //
+  // This file is safe to back up. It contains no secrets.
+
+  "tokenStorePath":    "%APPDATA%\\SyncIt\\token.bin",
+  "stateDbPath":       "%APPDATA%\\SyncIt\\state.db",
+  "deleteJournalPath": "%APPDATA%\\SyncIt\\delete-journal.db",
+  "logDirectory":      "%APPDATA%\\SyncIt\\logs",
+  "localTrashPath":    "%APPDATA%\\SyncIt\\.syncit-trash",
+
+  // How often (seconds) to poll Google Drive for remote changes
+  "pollIntervalSeconds": 30,
+
+  // SAFETY: if more than this many files would be deleted in one cycle,
+  // freeze all deletions and notify the tray for manual approval
+  "maxDeletionsPerCycle": 10,
+
+  // How many sync cycles to wait before executing a deletion (grace period)
+  // Default 2 = ~60 seconds at 30s poll interval
+  "deletionGraceCycles": 2,
+
+  // Named pipe for tray↔service communication (do not change unless you have a conflict)
+  "pipeName": "SyncItIpc",
+
+  "syncPairs": [
+    {
+      // Unique ID for this pair — do not change after first sync
+      "id": "pair001",
+
+      // Local folder to sync
+      "localPath": "C:\\Users\\YourName\\Documents\\SyncedDocs",
+
+      // Google Drive folder ID (from the folder URL: drive.google.com/drive/folders/FOLDER_ID)
+      "remoteFolderId": "PASTE_YOUR_DRIVE_FOLDER_ID_HERE",
+
+      // Display name (not used for sync — for your reference only)
+      "remoteFolderName": "My Drive / SyncedDocs",
+
+      "enabled": true,
+
+      // Convert Google Docs → .docx, Sheets → .xlsx, Slides → .pptx on download
+      "exportGoogleDocs": true,
+
+      // Conflict resolution policy
+      // Options: "LastWriteWins" | "KeepBoth" | "PreferLocal" | "PreferRemote"
+      "conflictPolicy": {
+        "resolution": "LastWriteWins",
+        "keepBothSuffix": "(SyncIt conflict {date})"
+      },
+
+      // Files matching any of these patterns are NOT synced
+      "excludeGlobs": [
+        "*.tmp",
+        "*.~*",
+        "~$*",
+        "Thumbs.db",
+        ".DS_Store",
+        "node_modules/**",
+        ".git/**",
+        ".svn/**",
+        "desktop.ini",
+        "*.syncit-tmp-*",
+        ".syncit-trash/**"
+      ],
+
+      // Files matching any of these patterns ARE synced (empty = include everything)
+      "includeGlobs": [],
+
+      // Skip files larger than this (bytes). Default: 5GB
+      "maxFileSizeBytes": 5368709120,
+
+      // Selective subfolder sync.
+      // List of subfolder paths (relative to remoteFolderId) to include.
+      // Empty list (default) = sync everything inside the Drive folder.
+      //
+      // Examples:
+      //   ["Projects"]                  → only sync the Projects/ subtree
+      //   ["Work/Reports", "Finance"]   → sync Work/Reports/ and Finance/ subtrees
+      //
+      // Files at the root of the Drive folder (not inside any subfolder) are ALWAYS synced.
+      // Paths are matched case-insensitively and use forward slashes.
+      //
+      // TIP: Right-click the tray icon and choose "Select Folders..." to configure this
+      //      interactively — it will show a tree of your Drive subfolders with checkboxes.
+      "selectedSubfolders": []
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+publish/
+
+## Sensitive / runtime files — never commit these
+**/syncit.json
+**/*.bin
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/logs/
+**/.syncit-trash/
+
+## Example config is committed
+!docs/syncit.example.json
+
+## OS
+Thumbs.db
+.DS_Store
+desktop.ini
