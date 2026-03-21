@@ -242,8 +242,8 @@ public sealed class DashboardForm : Form
         }));
         bottomPanel.Controls.Add(MakeLinkLabel("Preferences", () =>
         {
-            var cfg = PathHelper.Expand(@"%APPDATA%\SyncIt\syncit.json");
-            if (File.Exists(cfg)) Process.Start(new ProcessStartInfo(cfg) { UseShellExecute = true });
+            using var form = new PreferencesForm();
+            form.ShowDialog(this);
         }));
 
         // ── Assemble (reverse order because DockStyle.Top stacks top-down) ──
@@ -477,6 +477,9 @@ public sealed class DashboardForm : Form
                     ActivityType.Error            => AccentRed,
                     ActivityType.ConflictResolved  => AccentOrange,
                     ActivityType.Deleted           => SubtleText,
+                    ActivityType.FolderDeleted     => SubtleText,
+                    ActivityType.Renamed           => Color.FromArgb(80, 80, 180),
+                    ActivityType.FolderCreated     => Color.FromArgb(40, 140, 80),
                     _                              => Color.FromArgb(30, 30, 30),
                 };
                 _activityList.Items.Add(item);

@@ -195,7 +195,8 @@ public sealed class SyncItApp : ApplicationContext
             var safetyValidator = new DeletionSafetyValidator(_config, stateStore, deletionJournal, CreateLogger<DeletionSafetyValidator>());
             var deletionCoord   = new DeletionCoordinator(
                 _config, safetyValidator, deletionJournal, trashManager,
-                driveService, stateStore, atomicWriter, CreateLogger<DeletionCoordinator>());
+                driveService, stateStore, atomicWriter, CreateLogger<DeletionCoordinator>(),
+                _activityLog);
 
             deletionCoord.DeletionFreezeTriggered += OnDeletionFreezeTriggered;
             _deletionCoordinators.Add(deletionCoord);

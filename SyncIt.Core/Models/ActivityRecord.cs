@@ -7,6 +7,9 @@ public enum ActivityType
     ConflictResolved,
     Deleted,
     Error,
+    Renamed,
+    FolderCreated,
+    FolderDeleted,
 }
 
 /// <summary>

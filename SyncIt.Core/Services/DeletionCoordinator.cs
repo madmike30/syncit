@@ -18,6 +18,7 @@ public sealed class DeletionCoordinator : IDeletionCoordinator
     private readonly IGoogleDriveService _driveService;
     private readonly IFileStateStore _stateStore;
     private readonly AtomicFileWriter _atomicWriter;
+    private readonly IActivityLog? _activityLog;
     private readonly ILogger<DeletionCoordinator> _logger;
 
     // Raised when deletions are frozen — SyncWorker forwards this to IPC
@@ -31,7 +32,8 @@ public sealed class DeletionCoordinator : IDeletionCoordinator
         IGoogleDriveService driveService,
         IFileStateStore stateStore,
         AtomicFileWriter atomicWriter,
-        ILogger<DeletionCoordinator> logger)
+        ILogger<DeletionCoordinator> logger,
+        IActivityLog? activityLog = null)
     {
         _config       = config;
         _validator    = validator;
@@ -40,6 +42,7 @@ public sealed class DeletionCoordinator : IDeletionCoordinator
         _driveService = driveService;
         _stateStore   = stateStore;
         _atomicWriter = atomicWriter;
+        _activityLog  = activityLog;
         _logger       = logger;
     }
 
@@ -107,6 +110,15 @@ public sealed class DeletionCoordinator : IDeletionCoordinator
                 record = await ExecuteSingleDeletionAsync(record, pair, ct);
                 await _journal.UpdateStatusAsync(record.Id, DeletionStatus.Executed, DateTime.UtcNow, record.TrashPath, ct);
                 await _stateStore.MarkDeletedAsync(record.SyncPairId, record.Side, record.RelativePath);
+
+                _ = _activityLog?.RecordAsync(new ActivityRecord
+                {
+                    SyncPairId   = record.SyncPairId,
+                    Type         = ActivityType.Deleted,
+                    RelativePath = record.RelativePath,
+                    SizeBytes    = record.SizeBytes,
+                    Details      = $"{record.Side}: {record.TriggerReason}",
+                });
 
                 _logger.LogInformation(
                     "Executed deletion: '{Path}' (side={Side}, trigger={Reason})",

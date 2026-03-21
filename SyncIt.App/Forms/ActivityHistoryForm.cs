@@ -50,6 +50,9 @@ public sealed class ActivityHistoryForm : Form
         _typeFilter.Items.Add("Conflict");
         _typeFilter.Items.Add("Deleted");
         _typeFilter.Items.Add("Error");
+        _typeFilter.Items.Add("Renamed");
+        _typeFilter.Items.Add("Folder Created");
+        _typeFilter.Items.Add("Folder Deleted");
         _typeFilter.SelectedIndex = 0;
         _typeFilter.SelectedIndexChanged += (_, _) => ApplyFilter();
 
@@ -131,6 +134,9 @@ public sealed class ActivityHistoryForm : Form
                 ActivityType.Error => Color.DarkRed,
                 ActivityType.ConflictResolved => Color.DarkOrange,
                 ActivityType.Deleted => Color.Gray,
+                ActivityType.FolderDeleted => Color.Gray,
+                ActivityType.Renamed => Color.DarkBlue,
+                ActivityType.FolderCreated => Color.DarkGreen,
                 _ => Color.Black,
             };
 

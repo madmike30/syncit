@@ -581,8 +581,31 @@ public sealed class SyncEngine : ISyncEngine
     {
         var absolutePath = PathHelper.ToAbsolute(pair.LocalPath, ev.RelativePath);
 
+        // Directory events: create the folder on Drive, log, and return
+        if (Directory.Exists(absolutePath) && ev.Kind != ChangeKind.Deleted)
+        {
+            if (ev.Kind == ChangeKind.Created)
+            {
+                var parentRel = Path.GetDirectoryName(ev.RelativePath.Replace('/', Path.DirectorySeparatorChar)) ?? string.Empty;
+                var parentId = parentRel.Length > 0
+                    ? await _driveService.EnsureFolderPathAsync(pair.RemoteFolderId, parentRel, ct)
+                    : pair.RemoteFolderId;
+                await _driveService.EnsureFolderPathAsync(pair.RemoteFolderId, ev.RelativePath.Replace('/', Path.DirectorySeparatorChar), ct);
+                LogActivity(ActivityType.FolderCreated, ev.RelativePath);
+                _logger.LogInformation("Folder created: {Path}", ev.RelativePath);
+            }
+            else if (ev.Kind == ChangeKind.Renamed && ev.OldRelativePath is not null)
+            {
+                // Folder rename: create new folder path on Drive, move contents will be handled by individual file events
+                await _driveService.EnsureFolderPathAsync(pair.RemoteFolderId, ev.RelativePath.Replace('/', Path.DirectorySeparatorChar), ct);
+                LogActivity(ActivityType.Renamed, ev.RelativePath, details: $"Folder renamed from {ev.OldRelativePath}");
+                _logger.LogInformation("Folder renamed: '{Old}' → '{New}'", ev.OldRelativePath, ev.RelativePath);
+            }
+            return;
+        }
+
         // If file was deleted while we were waiting, treat as a delete
-        if (!IOFile.Exists(absolutePath) && ev.Kind != ChangeKind.Deleted)
+        if (!IOFile.Exists(absolutePath) && !Directory.Exists(absolutePath) && ev.Kind != ChangeKind.Deleted)
         {
             _logger.LogDebug("File vanished before processing: {Path} — treating as delete.", ev.RelativePath);
             await HandleLocalDeleteAsync(ev with { Kind = ChangeKind.Deleted }, pair, ct);
@@ -612,6 +635,7 @@ public sealed class SyncEngine : ISyncEngine
             // Clean up old path baselines
             await _stateStore.RemoveRecordAsync(pair.Id, SyncSide.Remote, ev.OldRelativePath);
             await _stateStore.RemoveRecordAsync(pair.Id, SyncSide.Local, ev.OldRelativePath);
+            LogActivity(ActivityType.Renamed, ev.RelativePath, details: $"Renamed from {ev.OldRelativePath}");
         }
         else if (baseline?.DriveFileId is not null)
         {
@@ -766,6 +790,7 @@ public sealed class SyncEngine : ISyncEngine
                 }
                 await _stateStore.RemoveRecordAsync(pair.Id, SyncSide.Remote, oldRemote.RelativePath);
                 await _stateStore.RemoveRecordAsync(pair.Id, SyncSide.Local, oldRemote.RelativePath);
+                LogActivity(ActivityType.Renamed, relativePath, details: $"Renamed from {oldRemote.RelativePath}");
             }
         }
 
@@ -928,6 +953,7 @@ public sealed class SyncEngine : ISyncEngine
         {
             var folderLocalPath = PathHelper.ToAbsolute(pair.LocalPath, relativePath);
             Directory.CreateDirectory(folderLocalPath);
+            LogActivity(ActivityType.FolderCreated, relativePath, details: "Remote folder synced locally");
             return;
         }
 
