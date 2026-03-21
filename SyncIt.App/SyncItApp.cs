@@ -469,9 +469,7 @@ public sealed class SyncItApp : ApplicationContext
             ShowNewFolderButton = true,
         };
 
-        // Use dashboard as owner so the dialog appears in front
-        var owner = _dashboard is not null && !_dashboard.IsDisposed ? _dashboard : null;
-        if (dialog.ShowDialog(owner) != DialogResult.OK) return;
+        if (dialog.ShowDialog() != DialogResult.OK) return;
 
         var newPath = dialog.SelectedPath;
         if (string.Equals(PathHelper.Expand(pair.LocalPath), newPath, StringComparison.OrdinalIgnoreCase))

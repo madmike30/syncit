@@ -314,6 +314,19 @@ public sealed class DashboardForm : Form
     // Refresh
     // =====================================================================
 
+    private void OnChangeFolderClick(string pairId)
+    {
+        _refreshTimer?.Stop();
+        try
+        {
+            _changeSyncFolder(pairId);
+        }
+        finally
+        {
+            _refreshTimer?.Start();
+        }
+    }
+
     private void RefreshUI()
     {
         var status = _getStatus();
@@ -426,24 +439,21 @@ public sealed class DashboardForm : Form
                 MaximumSize = new Size(card.Width - 140, 0),
             };
 
-            var changeFolderBtn = new LinkLabel
+            var changeFolderBtn = new Button
             {
                 Text      = "Change folder",
-                Font      = new Font("Segoe UI", 8.5f),
-                AutoSize  = true,
-                Location  = new Point(Math.Max(200, card.Width - 120), 10),
+                Font      = new Font("Segoe UI", 8f),
+                ForeColor = AccentBlue,
+                BackColor = CardBg,
+                FlatStyle = FlatStyle.Flat,
+                Size      = new Size(90, 24),
+                Location  = new Point(Math.Max(200, card.Width - 106), 8),
                 Anchor    = AnchorStyles.Top | AnchorStyles.Right,
-                LinkColor = AccentBlue,
                 Cursor    = Cursors.Hand,
             };
+            changeFolderBtn.FlatAppearance.BorderColor = CardBorder;
             var pairId = pair.SyncPairId;
-            changeFolderBtn.LinkClicked += (_, _) =>
-            {
-                // Pause refresh timer while folder dialog is open to avoid control rebuilds
-                _refreshTimer?.Stop();
-                try { _changeSyncFolder(pairId); }
-                finally { _refreshTimer?.Start(); }
-            };
+            changeFolderBtn.Click += (_, _) => OnChangeFolderClick(pairId);
 
             if (pair.PendingChanges > 0 || pair.PendingDeletions > 0)
             {
