@@ -17,11 +17,20 @@ public sealed class PreferencesForm : Form
     private static readonly string ConfigPath =
         PathHelper.Expand(@"%APPDATA%\SyncIt\syncit.json");
 
-    private static readonly JsonSerializerOptions JsonOpts = new()
+    private static readonly JsonSerializerOptions ReadOpts = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        ReadCommentHandling         = JsonCommentHandling.Skip,
+        AllowTrailingCommas         = true,
+        Converters                  = { new System.Text.Json.Serialization.JsonStringEnumConverter() },
+    };
+
+    private static readonly JsonSerializerOptions WriteOpts = new()
     {
         PropertyNamingPolicy   = JsonNamingPolicy.CamelCase,
         WriteIndented          = true,
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+        Converters             = { new System.Text.Json.Serialization.JsonStringEnumConverter() },
     };
 
     private SyncConfig _config = null!;
@@ -46,7 +55,7 @@ public sealed class PreferencesForm : Form
         if (File.Exists(ConfigPath))
         {
             var json = File.ReadAllText(ConfigPath);
-            _config = JsonSerializer.Deserialize<SyncConfig>(json, JsonOpts) ?? new SyncConfig();
+            _config = JsonSerializer.Deserialize<SyncConfig>(json, ReadOpts) ?? new SyncConfig();
         }
         else
         {
@@ -65,7 +74,7 @@ public sealed class PreferencesForm : Form
 
         var dir = Path.GetDirectoryName(ConfigPath);
         if (dir is not null) Directory.CreateDirectory(dir);
-        File.WriteAllText(ConfigPath, JsonSerializer.Serialize(_config, JsonOpts));
+        File.WriteAllText(ConfigPath, JsonSerializer.Serialize(_config, WriteOpts));
     }
 
     private void BuildUI()
