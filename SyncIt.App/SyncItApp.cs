@@ -329,6 +329,7 @@ public sealed class SyncItApp : ApplicationContext
         _menu.Items.Add("Sync Now",            null, OnSyncNow);
         _pauseItem = new ToolStripMenuItem("Pause Syncing", null, OnPauseResume);
         _menu.Items.Add(_pauseItem);
+        _menu.Items.Add("Switch Account",     null, OnSwitchAccount);
         _menu.Items.Add(new ToolStripSeparator());
 
         _autoStartItem = new ToolStripMenuItem("Start with Windows", null, OnToggleAutoStart)
@@ -410,7 +411,8 @@ public sealed class SyncItApp : ApplicationContext
             isPaused:         () => _globalPaused,
             fetchActivity:    async () => _activityLog is null ? null : await _activityLog.GetRecentAsync(200),
             changeSyncFolder: pairId => ChangeSyncFolder(pairId),
-            openSyncFolder:   () => OpenSyncFolder()
+            openSyncFolder:   () => OpenSyncFolder(),
+            showAccountForm:  () => ShowAccountForm()
         );
         _dashboard.FormClosed += (_, _) => _dashboard = null;
         _dashboard.Show();
@@ -498,6 +500,59 @@ public sealed class SyncItApp : ApplicationContext
             MessageBox.Show($"Failed to update config:\n{ex.Message}", "SyncIt",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+    }
+
+    private void OnSwitchAccount(object? sender, EventArgs e) => ShowAccountForm();
+
+    private void ShowAccountForm()
+    {
+        using var form = new AccountForm(
+            _accountInfo?.Email,
+            _accountInfo?.StorageUsedBytes ?? 0,
+            _accountInfo?.StorageTotalBytes ?? 0,
+            SwitchAccountAsync);
+        form.ShowDialog();
+    }
+
+    private async Task SwitchAccountAsync()
+    {
+        // 1. Stop all sync engines
+        _engineCts.Cancel();
+        await StopEnginesAsync();
+
+        // 2. Delete the existing OAuth token to force re-auth
+        var tokenPath = PathHelper.Expand(_config.TokenStorePath);
+        if (File.Exists(tokenPath))
+            File.Delete(tokenPath);
+
+        // 3. Re-initialize OAuth (opens browser for new account)
+        var oauthService = new OAuthService(_config, CreateLogger<OAuthService>());
+        var credential = await oauthService.InitializeAsync();
+
+        // 4. Recreate Drive service with new credential
+        (_driveService as IDisposable)?.Dispose();
+        var driveService = new GoogleDriveService(credential, CreateLogger<GoogleDriveService>(), _config);
+        _driveService = driveService;
+
+        // 5. Fetch new account info immediately
+        _accountInfo = await driveService.GetAccountInfoAsync();
+        _lastAccountFetch = DateTime.UtcNow;
+
+        // 6. Restart engines with new credential
+        _engineCts = new CancellationTokenSource();
+        var ct = _engineCts.Token;
+
+        var globFilter   = new GlobFilter();
+        var atomicWriter = new AtomicFileWriter(CreateLogger<AtomicFileWriter>());
+        await StartEnginesAsync(driveService, globFilter, atomicWriter, ct);
+
+        // 7. Push updated status to UI
+        PushStatus();
+
+        // 8. Restart status push loop
+        _ = Task.Run(() => StatusPushLoopAsync(ct));
+
+        _logger.LogInformation("Account switched to {Email}", _accountInfo.Email);
     }
 
     private void OnToggleAutoStart(object? sender, EventArgs e)

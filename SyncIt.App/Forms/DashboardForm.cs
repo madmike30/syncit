@@ -35,6 +35,7 @@ public sealed class DashboardForm : Form
     private readonly Func<Task<List<ActivityRecord>?>> _fetchActivity;
     private readonly Action<string> _changeSyncFolder;       // pairId
     private readonly Action _openSyncFolder;
+    private readonly Action? _showAccountForm;
 
     // ── Dynamic controls ────────────────────────────────────────────────
     private Label _accountLabel = null!;
@@ -57,7 +58,8 @@ public sealed class DashboardForm : Form
         Func<bool> isPaused,
         Func<Task<List<ActivityRecord>?>> fetchActivity,
         Action<string> changeSyncFolder,
-        Action openSyncFolder)
+        Action openSyncFolder,
+        Action? showAccountForm = null)
     {
         _getStatus        = getStatus;
         _getTransfers     = getTransfers;
@@ -67,6 +69,7 @@ public sealed class DashboardForm : Form
         _fetchActivity    = fetchActivity;
         _changeSyncFolder = changeSyncFolder;
         _openSyncFolder   = openSyncFolder;
+        _showAccountForm  = showAccountForm;
 
         SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
         BuildUI();
@@ -106,10 +109,28 @@ public sealed class DashboardForm : Form
             ForeColor = Color.FromArgb(200, 220, 255),
             AutoSize  = true,
             Location  = new Point(20, 48),
+            Cursor    = _showAccountForm is not null ? Cursors.Hand : Cursors.Default,
         };
+        if (_showAccountForm is not null)
+            _accountLabel.Click += (_, _) => _showAccountForm();
+
+        var switchLabel = new LinkLabel
+        {
+            Text      = "Switch account",
+            Font      = new Font("Segoe UI", 8.5f),
+            LinkColor = Color.FromArgb(180, 200, 255),
+            AutoSize  = true,
+            Anchor    = AnchorStyles.Top | AnchorStyles.Right,
+            Location  = new Point(header.Width - 120, 52),
+            Cursor    = Cursors.Hand,
+        };
+        if (_showAccountForm is not null)
+            switchLabel.Click += (_, _) => _showAccountForm();
 
         header.Controls.Add(titleLabel);
         header.Controls.Add(_accountLabel);
+        if (_showAccountForm is not null)
+            header.Controls.Add(switchLabel);
 
         // ── Status + Storage card ───────────────────────────────────
         var statusCard = MakeCard(90);
