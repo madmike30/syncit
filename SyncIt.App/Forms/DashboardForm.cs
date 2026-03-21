@@ -437,7 +437,13 @@ public sealed class DashboardForm : Form
                 Cursor    = Cursors.Hand,
             };
             var pairId = pair.SyncPairId;
-            changeFolderBtn.LinkClicked += (_, _) => _changeSyncFolder(pairId);
+            changeFolderBtn.LinkClicked += (_, _) =>
+            {
+                // Pause refresh timer while folder dialog is open to avoid control rebuilds
+                _refreshTimer?.Stop();
+                try { _changeSyncFolder(pairId); }
+                finally { _refreshTimer?.Start(); }
+            };
 
             if (pair.PendingChanges > 0 || pair.PendingDeletions > 0)
             {

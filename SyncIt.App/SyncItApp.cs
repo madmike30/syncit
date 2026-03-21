@@ -522,9 +522,9 @@ public sealed class SyncItApp : ApplicationContext
 
     private async Task SwitchAccountAsync()
     {
-        // 1. Stop all sync engines
+        // 1. Stop all sync engines (on background thread to avoid UI deadlock)
         _engineCts.Cancel();
-        await StopEnginesAsync();
+        await Task.Run(StopEnginesAsync);
 
         // 2. Delete the existing OAuth token to force re-auth
         var tokenPath = PathHelper.Expand(_config.TokenStorePath);
@@ -533,7 +533,7 @@ public sealed class SyncItApp : ApplicationContext
 
         // 3. Re-initialize OAuth (opens browser for new account)
         var oauthService = new OAuthService(_config, CreateLogger<OAuthService>());
-        var credential = await oauthService.InitializeAsync();
+        var credential = await Task.Run(() => oauthService.InitializeAsync());
 
         // 4. Recreate Drive service with new credential
         (_driveService as IDisposable)?.Dispose();
@@ -541,7 +541,7 @@ public sealed class SyncItApp : ApplicationContext
         _driveService = driveService;
 
         // 5. Fetch new account info immediately
-        _accountInfo = await driveService.GetAccountInfoAsync();
+        _accountInfo = await Task.Run(() => driveService.GetAccountInfoAsync());
         _lastAccountFetch = DateTime.UtcNow;
 
         // 6. Restart engines with new credential
@@ -550,7 +550,7 @@ public sealed class SyncItApp : ApplicationContext
 
         var globFilter   = new GlobFilter();
         var atomicWriter = new AtomicFileWriter(CreateLogger<AtomicFileWriter>());
-        await StartEnginesAsync(driveService, globFilter, atomicWriter, ct);
+        await Task.Run(() => StartEnginesAsync(driveService, globFilter, atomicWriter, ct));
 
         // 7. Push updated status to UI
         PushStatus();
