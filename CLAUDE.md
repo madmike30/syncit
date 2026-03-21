@@ -19,7 +19,7 @@ SyncIt is a Windows Google Drive sync application (like OneDrive/Google Drive de
 ```
 SyncIt.App/          — WinForms entry point, tray icon, dashboard UI, forms
   SyncItApp.cs       — Main ApplicationContext: owns tray icon + sync engines
-  Forms/             — DashboardForm, ActivityHistoryForm, StatusForm, etc.
+  Forms/             — DashboardForm, FirstRunForm, AccountForm, DriveFolderPickerForm, etc.
 SyncIt.Core/         — All sync logic (no UI dependency)
   Services/          — SyncEngine, GoogleDriveService, ChangeQueue, DeletionCoordinator, etc.
   Safety/            — DeletionSafetyValidator, DeletionJournal (3-layer deletion safety)
@@ -147,3 +147,8 @@ Run each test sequentially, waiting ~35s between tests for a full poll cycle. Ve
 - **Google Apps MIME types** (`application/vnd.google-apps.*`) cannot be downloaded via `DownloadFileAsync` — they must use Export API or be skipped. Binary download throws "Only files with binary content can be downloaded."
 - **Path resolution**: `GetRelativePathAsync` walks the parent chain from a file up to `rootFolderId`. It returns `null` for files outside the sync tree or for the root folder itself.
 - **FSW needs `NotifyFilters.DirectoryName`** for folder create/delete/rename events — without it, only file events fire.
+- **Empty folders must be synced**: `ListFilesAsync` must yield folder entries (not just recurse into them), and `InitialSyncAsync` must enumerate local directories separately from files. `DownloadRemoteFileAsync` handles folders via `Directory.CreateDirectory`.
+- **Cloud Files pin state constants**: `CF_PIN_STATE_PINNED = 1`, NOT 2 (which is `UNPINNED`). Getting this wrong causes folders to show blue cloud icons instead of green checkmarks.
+- **Cloud Files overlay for folders**: Both `SetInSyncState` AND `CfSetPinState(PINNED)` must be called for items to show green checkmarks. `CfConvertToPlaceholder` with `CF_CONVERT_FLAG_MARK_IN_SYNC` alone is not sufficient — items still need to be pinned.
+- **FolderBrowserDialog hangs on UI thread**: The COM-based dialog can deadlock with the WinForms message pump. Run it on a dedicated STA thread with `thread.SetApartmentState(ApartmentState.STA)`.
+- **OAuth account picker**: `GoogleWebAuthorizationBroker.AuthorizeAsync` auto-selects the last Google account. To force the account picker, use a custom `GoogleAuthorizationCodeFlow` with `Prompt = "select_account"` on the `Initializer`. Note: `"consent"` forces re-consent but may auto-select the same account — use `"select_account"` to force the account chooser. The dedicated `Prompt` property on `GoogleAuthorizationCodeFlow.Initializer` is preferred over `UserDefinedQueryParams`.

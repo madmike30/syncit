@@ -44,19 +44,53 @@ public sealed class OAuthService : IOAuthService
 
     public async Task<UserCredential> InitializeAsync(CancellationToken ct = default)
     {
+        return await AuthorizeInternalAsync(forceAccountPicker: false, ct);
+    }
+
+    public async Task<UserCredential> ReauthorizeAsync(CancellationToken ct = default)
+    {
+        _credential = null;
+        var dataStore = new DpapiDataStore(_config.TokenStorePath, _logger);
+        await dataStore.DeleteAsync<TokenResponse>(UserId);
+        return await AuthorizeInternalAsync(forceAccountPicker: true, ct);
+    }
+
+    private async Task<UserCredential> AuthorizeInternalAsync(bool forceAccountPicker, CancellationToken ct)
+    {
         var (clientId, clientSecret) = CredentialHelper.LoadClientCredentials();
         var dataStore = new DpapiDataStore(_config.TokenStorePath, _logger);
-
         var clientSecrets = new ClientSecrets { ClientId = clientId, ClientSecret = clientSecret };
 
         try
         {
-            _credential = await GoogleWebAuthorizationBroker.AuthorizeAsync(
-                clientSecrets,
-                Scopes,
-                UserId,
-                ct,
-                dataStore);
+            if (forceAccountPicker)
+            {
+                // Use a custom flow with prompt=select_account so Google shows the
+                // account picker instead of auto-selecting the last used account.
+                // "select_account" forces account selection; "consent" alone only
+                // forces re-consent but may auto-select the same account.
+                var flow = new GoogleAuthorizationCodeFlow(new GoogleAuthorizationCodeFlow.Initializer
+                {
+                    ClientSecrets = clientSecrets,
+                    Scopes = Scopes,
+                    DataStore = dataStore,
+                    Prompt = "select_account",
+                });
+
+                _credential = await new Google.Apis.Auth.OAuth2.AuthorizationCodeInstalledApp(
+                    flow,
+                    new Google.Apis.Auth.OAuth2.LocalServerCodeReceiver())
+                    .AuthorizeAsync(UserId, ct);
+            }
+            else
+            {
+                _credential = await GoogleWebAuthorizationBroker.AuthorizeAsync(
+                    clientSecrets,
+                    Scopes,
+                    UserId,
+                    ct,
+                    dataStore);
+            }
 
             _logger.LogInformation("OAuth initialized. Token expiry: {Expiry}", _credential.Token.IssuedUtc);
             return _credential;
@@ -65,16 +99,8 @@ public sealed class OAuthService : IOAuthService
         {
             _logger.LogWarning("Refresh token expired. Clearing token and re-authorizing.");
             await dataStore.DeleteAsync<TokenResponse>(UserId);
-            return await InitializeAsync(ct);
+            return await AuthorizeInternalAsync(forceAccountPicker, ct);
         }
-    }
-
-    public async Task<UserCredential> ReauthorizeAsync(CancellationToken ct = default)
-    {
-        _credential = null;
-        var dataStore = new DpapiDataStore(_config.TokenStorePath, _logger);
-        await dataStore.DeleteAsync<TokenResponse>(UserId);
-        return await InitializeAsync(ct);
     }
 }
 

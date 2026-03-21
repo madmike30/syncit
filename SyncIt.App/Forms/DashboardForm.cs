@@ -34,6 +34,7 @@ public sealed class DashboardForm : Form
     private readonly Func<bool> _isPaused;
     private readonly Func<Task<List<ActivityRecord>?>> _fetchActivity;
     private readonly Action<string> _changeSyncFolder;       // pairId
+    private readonly Action<string> _changeDriveFolder;     // pairId
     private readonly Action _openSyncFolder;
     private readonly Action? _showAccountForm;
 
@@ -59,7 +60,8 @@ public sealed class DashboardForm : Form
         Func<Task<List<ActivityRecord>?>> fetchActivity,
         Action<string> changeSyncFolder,
         Action openSyncFolder,
-        Action? showAccountForm = null)
+        Action? showAccountForm = null,
+        Action<string>? changeDriveFolder = null)
     {
         _getStatus        = getStatus;
         _getTransfers     = getTransfers;
@@ -68,6 +70,7 @@ public sealed class DashboardForm : Form
         _isPaused         = isPaused;
         _fetchActivity    = fetchActivity;
         _changeSyncFolder = changeSyncFolder;
+        _changeDriveFolder = changeDriveFolder ?? (_ => { });
         _openSyncFolder   = openSyncFolder;
         _showAccountForm  = showAccountForm;
 
@@ -327,6 +330,19 @@ public sealed class DashboardForm : Form
         }
     }
 
+    private void OnChangeDriveFolderClick(string pairId)
+    {
+        _refreshTimer?.Stop();
+        try
+        {
+            _changeDriveFolder(pairId);
+        }
+        finally
+        {
+            _refreshTimer?.Start();
+        }
+    }
+
     private void RefreshUI()
     {
         var status = _getStatus();
@@ -439,20 +455,35 @@ public sealed class DashboardForm : Form
                 MaximumSize = new Size(card.Width - 140, 0),
             };
 
-            var changeFolderBtn = new Button
+            var changeDriveFolderBtn = new Button
             {
-                Text      = "Change folder",
+                Text      = "Change Drive folder",
                 Font      = new Font("Segoe UI", 8f),
                 ForeColor = AccentBlue,
                 BackColor = CardBg,
                 FlatStyle = FlatStyle.Flat,
-                Size      = new Size(90, 24),
-                Location  = new Point(Math.Max(200, card.Width - 106), 8),
+                Size      = new Size(130, 24),
+                Location  = new Point(Math.Max(140, card.Width - 236), 8),
+                Anchor    = AnchorStyles.Top | AnchorStyles.Right,
+                Cursor    = Cursors.Hand,
+            };
+            changeDriveFolderBtn.FlatAppearance.BorderColor = CardBorder;
+            var pairId = pair.SyncPairId;
+            changeDriveFolderBtn.Click += (_, _) => OnChangeDriveFolderClick(pairId);
+
+            var changeFolderBtn = new Button
+            {
+                Text      = "Change local folder",
+                Font      = new Font("Segoe UI", 8f),
+                ForeColor = AccentBlue,
+                BackColor = CardBg,
+                FlatStyle = FlatStyle.Flat,
+                Size      = new Size(110, 24),
+                Location  = new Point(Math.Max(275, card.Width - 106), 8),
                 Anchor    = AnchorStyles.Top | AnchorStyles.Right,
                 Cursor    = Cursors.Hand,
             };
             changeFolderBtn.FlatAppearance.BorderColor = CardBorder;
-            var pairId = pair.SyncPairId;
             changeFolderBtn.Click += (_, _) => OnChangeFolderClick(pairId);
 
             if (pair.PendingChanges > 0 || pair.PendingDeletions > 0)
@@ -470,6 +501,7 @@ public sealed class DashboardForm : Form
             card.Controls.Add(nameLabel);
             card.Controls.Add(stateLabel);
             card.Controls.Add(pathLabel);
+            card.Controls.Add(changeDriveFolderBtn);
             card.Controls.Add(changeFolderBtn);
 
             _pairsContainer.Controls.Add(card);

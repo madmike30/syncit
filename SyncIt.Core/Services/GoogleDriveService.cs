@@ -88,6 +88,9 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
                 {
                     _folderCache.Set(file.Id, file.Name, file.Parents?.FirstOrDefault());
 
+                    // Yield the folder itself so callers can create it locally
+                    yield return file;
+
                     // Recurse into subfolder
                     await foreach (var child in ListFilesAsync(file.Id, ct))
                         yield return child;
@@ -343,20 +346,16 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
         bool reachedRoot = (parentId == rootFolderId);
         for (int depth = 0; depth < 50 && !reachedRoot && parentId is not null; depth++)
         {
-            // Check cache before making API call for each parent
-            if (_folderCache.TryGetRelativePath(parentId, "", rootFolderId, null) is not null)
-            {
-                // Parent chain from here is cached — build remaining path from cache
-                var cached = _folderCache.TryGetRelativePath(fileId, file.Name, rootFolderId, file.Parents?.FirstOrDefault());
-                if (cached is not null) return cached;
-            }
-
             var parent = await GetFileAsync(parentId, ct);
             if (parent is null) return null;
 
             _folderCache.Set(parentId, parent.Name, parent.Parents?.FirstOrDefault());
-            segments.Push(parent.Name);
 
+            // After caching this parent, try full cache resolution from the original file
+            var cached = _folderCache.TryGetRelativePath(fileId, file.Name, rootFolderId, file.Parents?.FirstOrDefault());
+            if (cached is not null) return cached;
+
+            segments.Push(parent.Name);
             parentId = parent.Parents?.FirstOrDefault();
             reachedRoot = (parentId == rootFolderId);
         }

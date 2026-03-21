@@ -146,8 +146,42 @@ public sealed class SyncItApp : ApplicationContext
                     {
                         _logger.LogInformation("Config reloaded — restarting engines...");
                         await StopEnginesAsync();
+
+                        var oldConfig = _config;
                         _config = newConfig;
-                        await StartEnginesAsync(driveService, globFilter, atomicWriter, ct);
+                        var liveCt = _engineCts.Token;
+
+                        // If the Drive folder changed, reset state DBs (old file IDs are invalid)
+                        var oldPair = oldConfig.SyncPairs.FirstOrDefault(p => p.Enabled);
+                        var newPair = newConfig.SyncPairs.FirstOrDefault(p => p.Enabled);
+                        if (oldPair is not null && newPair is not null &&
+                            !string.Equals(oldPair.RemoteFolderId, newPair.RemoteFolderId, StringComparison.Ordinal))
+                        {
+                            _logger.LogInformation("Drive folder changed — resetting state databases.");
+                            foreach (var db in new[] { _config.StateDbPath, _config.DeleteJournalPath })
+                            {
+                                var path = PathHelper.Expand(db);
+                                foreach (var ext in new[] { "", "-shm", "-wal" })
+                                {
+                                    var f = path + ext;
+                                    if (File.Exists(f)) File.Delete(f);
+                                }
+                            }
+                        }
+
+                        // Recreate overlay store for the (possibly new) sync folder path
+                        if (newPair is not null)
+                        {
+                            var newLocalPath = PathHelper.Expand(newPair.LocalPath);
+                            _overlayStore?.Dispose();
+                            _overlayStore = new CloudSyncProvider(newLocalPath, "SyncIt", CreateLogger<CloudSyncProvider>());
+                            await _overlayStore.InitializeAsync(liveCt);
+                            _logger.LogInformation("Overlay store recreated for new path: {Path}", newLocalPath);
+                        }
+
+                        // Use current drive service and CTS (not stale captured locals)
+                        var currentDrive = _driveService as GoogleDriveService ?? driveService;
+                        await StartEnginesAsync(currentDrive, new GlobFilter(), new AtomicFileWriter(CreateLogger<AtomicFileWriter>()), liveCt);
                     }
                     catch (Exception ex)
                     {
@@ -412,7 +446,8 @@ public sealed class SyncItApp : ApplicationContext
             fetchActivity:    async () => _activityLog is null ? null : await _activityLog.GetRecentAsync(200),
             changeSyncFolder: pairId => ChangeSyncFolder(pairId),
             openSyncFolder:   () => OpenSyncFolder(),
-            showAccountForm:  () => ShowAccountForm()
+            showAccountForm:  () => ShowAccountForm(),
+            changeDriveFolder: pairId => ChangeDriveFolder(pairId)
         );
         _dashboard.FormClosed += (_, _) => _dashboard = null;
         _dashboard.Show();
@@ -461,18 +496,28 @@ public sealed class SyncItApp : ApplicationContext
             return;
         }
 
-        using var dialog = new FolderBrowserDialog
+        // Run the FolderBrowserDialog on a dedicated STA thread to avoid
+        // COM marshalling deadlocks with the WinForms UI thread.
+        string? selectedPath = null;
+        var thread = new Thread(() =>
         {
-            Description         = $"Choose local folder for \"{pair.RemoteFolderName}\"",
-            UseDescriptionForTitle = true,
-            SelectedPath        = PathHelper.Expand(pair.LocalPath),
-            ShowNewFolderButton = true,
-        };
+            using var dialog = new FolderBrowserDialog
+            {
+                Description            = $"Choose local folder for \"{pair.RemoteFolderName}\"",
+                UseDescriptionForTitle = true,
+                SelectedPath           = PathHelper.Expand(pair.LocalPath),
+                ShowNewFolderButton    = true,
+            };
+            if (dialog.ShowDialog() == DialogResult.OK)
+                selectedPath = dialog.SelectedPath;
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
 
-        if (dialog.ShowDialog() != DialogResult.OK) return;
+        if (selectedPath is null) return;
 
-        var newPath = dialog.SelectedPath;
-        if (string.Equals(PathHelper.Expand(pair.LocalPath), newPath, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(PathHelper.Expand(pair.LocalPath), selectedPath, StringComparison.OrdinalIgnoreCase))
             return;
 
         // Update config file
@@ -485,7 +530,7 @@ public sealed class SyncItApp : ApplicationContext
             var cfgPair = config.SyncPairs.FirstOrDefault(p => p.Id == pairId);
             if (cfgPair is null) return;
 
-            cfgPair.LocalPath = newPath;
+            cfgPair.LocalPath = selectedPath;
 
             var writeOpts = new JsonSerializerOptions
             {
@@ -496,7 +541,53 @@ public sealed class SyncItApp : ApplicationContext
             File.WriteAllText(ConfigPath, JsonSerializer.Serialize(config, writeOpts));
 
             MessageBox.Show(
-                $"Sync folder changed to:\n{newPath}\n\nSyncIt will restart the sync engine to apply.",
+                $"Sync folder changed to:\n{selectedPath}\n\nSyncIt will restart the sync engine to apply.",
+                "SyncIt", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to update config:\n{ex.Message}", "SyncIt",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void ChangeDriveFolder(string pairId)
+    {
+        if (_driveService is null)
+        {
+            MessageBox.Show("Not connected to Google Drive yet.", "SyncIt",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        using var picker = new DriveFolderPickerForm(_driveService);
+        if (picker.ShowDialog() != DialogResult.OK) return;
+
+        var newFolderId   = picker.SelectedFolderId!;
+        var newFolderName = picker.SelectedFolderName!;
+
+        try
+        {
+            var json   = File.ReadAllText(ConfigPath);
+            var config = JsonSerializer.Deserialize<SyncConfig>(json, JsonOpts);
+            if (config is null) return;
+
+            var cfgPair = config.SyncPairs.FirstOrDefault(p => p.Id == pairId);
+            if (cfgPair is null) return;
+
+            cfgPair.RemoteFolderId   = newFolderId;
+            cfgPair.RemoteFolderName = newFolderName;
+
+            var writeOpts = new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+                WriteIndented               = true,
+                Converters                  = { new JsonStringEnumConverter() },
+            };
+            File.WriteAllText(ConfigPath, JsonSerializer.Serialize(config, writeOpts));
+
+            MessageBox.Show(
+                $"Drive folder changed to:\n{newFolderName}\n\nSyncIt will restart the sync engine to apply.",
                 "SyncIt", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception ex)
@@ -524,14 +615,14 @@ public sealed class SyncItApp : ApplicationContext
         _engineCts.Cancel();
         await Task.Run(StopEnginesAsync);
 
-        // 2. Delete the existing OAuth token to force re-auth
+        // 2. Delete the token file directly to ensure a clean re-auth
         var tokenPath = PathHelper.Expand(_config.TokenStorePath);
         if (File.Exists(tokenPath))
             File.Delete(tokenPath);
 
-        // 3. Re-initialize OAuth (opens browser for new account)
+        // 3. Re-authorize with account picker (forces Google account selection prompt)
         var oauthService = new OAuthService(_config, CreateLogger<OAuthService>());
-        var credential = await Task.Run(() => oauthService.InitializeAsync());
+        var credential = await Task.Run(() => oauthService.ReauthorizeAsync());
 
         // 4. Recreate Drive service with new credential
         (_driveService as IDisposable)?.Dispose();
@@ -542,18 +633,98 @@ public sealed class SyncItApp : ApplicationContext
         _accountInfo = await Task.Run(() => driveService.GetAccountInfoAsync());
         _lastAccountFetch = DateTime.UtcNow;
 
-        // 6. Restart engines with new credential
+        // 6. Reset stale state databases (old account's file IDs are invalid)
+        // Dispose activity log to release its SQLite connection
+        (_activityLog as IDisposable)?.Dispose();
+        _activityLog = null;
+
+        // Clear SQLite connection pool — without this, pooled connections keep DB files locked
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+
+        await Task.Run(() =>
+        {
+            foreach (var db in new[] { _config.StateDbPath, _config.DeleteJournalPath, _config.ActivityLogPath })
+            {
+                var path = PathHelper.Expand(db);
+                foreach (var ext in new[] { "", "-shm", "-wal" })
+                {
+                    var f = path + ext;
+                    try { if (File.Exists(f)) File.Delete(f); }
+                    catch (IOException ex)
+                    {
+                        _logger.LogWarning(ex, "Could not delete {File} — SQLite connection may still be held.", f);
+                    }
+                }
+            }
+            _logger.LogInformation("Reset state databases for account switch.");
+        });
+
+        // 7. Validate configured Drive folder is accessible with new account
+        var firstPair = _config.SyncPairs.FirstOrDefault(p => p.Enabled);
+        if (firstPair is not null)
+        {
+            try
+            {
+                var testFile = await Task.Run(() => driveService.GetFileAsync(firstPair.RemoteFolderId));
+                if (testFile is null)
+                {
+                    // Folder not accessible — prompt user to pick a new one
+                    _logger.LogWarning("Configured Drive folder '{Name}' (ID: {Id}) not accessible with {Email}.",
+                        firstPair.RemoteFolderName, firstPair.RemoteFolderId, _accountInfo.Email);
+
+                    var result = MessageBox.Show(
+                        $"The configured Drive folder \"{firstPair.RemoteFolderName}\" is not accessible with {_accountInfo.Email}.\n\n" +
+                        "Would you like to select a different Drive folder?",
+                        "SyncIt — Folder Not Accessible", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+
+                    if (result == DialogResult.Yes)
+                        ChangeDriveFolder(firstPair.Id);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to validate Drive folder access after account switch.");
+                MessageBox.Show(
+                    $"Cannot access the configured Drive folder with {_accountInfo.Email}.\n\n" +
+                    "Please reconfigure the Drive folder via the Dashboard.",
+                    "SyncIt — Folder Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        // 8. Recreate activity log (old DB was deleted)
         _engineCts = new CancellationTokenSource();
         var ct = _engineCts.Token;
 
+        _activityLog = new ActivityLog(_config.ActivityLogPath, CreateLogger<ActivityLog>());
+        await _activityLog.InitializeAsync(ct);
+
+        // Re-read config in case ChangeDriveFolder updated it
+        if (File.Exists(ConfigPath))
+        {
+            var updatedConfig = JsonSerializer.Deserialize<SyncConfig>(
+                await File.ReadAllTextAsync(ConfigPath, ct), JsonOpts);
+            if (updatedConfig is not null)
+                _config = updatedConfig;
+        }
+
+        firstPair = _config.SyncPairs.FirstOrDefault(p => p.Enabled);
+        if (firstPair is not null)
+        {
+            var localPath = PathHelper.Expand(firstPair.LocalPath);
+            _overlayStore?.Dispose();
+            _overlayStore = new CloudSyncProvider(localPath, "SyncIt", CreateLogger<CloudSyncProvider>());
+            await _overlayStore.InitializeAsync(ct);
+        }
+
+        // 9. Restart engines with new credential
         var globFilter   = new GlobFilter();
         var atomicWriter = new AtomicFileWriter(CreateLogger<AtomicFileWriter>());
         await Task.Run(() => StartEnginesAsync(driveService, globFilter, atomicWriter, ct));
 
-        // 7. Push updated status to UI
+        // 10. Push updated status to UI
         PushStatus();
 
-        // 8. Restart status push loop
+        // 11. Restart status push loop
         _ = Task.Run(() => StatusPushLoopAsync(ct));
 
         _logger.LogInformation("Account switched to {Email}", _accountInfo.Email);

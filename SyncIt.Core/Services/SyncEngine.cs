@@ -128,20 +128,48 @@ public sealed class SyncEngine : ISyncEngine
         // Step 3: Set up FileSystemWatcher
         SetupFileSystemWatcher(pair);
 
-        // Step 4: Initial sync if no baseline exists, otherwise reconcile
-        var baselineCount = await _stateStore.CountRecordsAsync(pair.Id, SyncSide.Local);
-        if (baselineCount == 0)
+        // Step 4: Validate remote folder access before sync
+        try
         {
-            SetState(SyncState.Syncing, "Initial sync...");
-            await InitialSyncAsync(pair, ct);
+            var testFile = await _driveService.GetFileAsync(pair.RemoteFolderId, ct);
+            if (testFile is null)
+            {
+                SetState(SyncState.Error, $"Drive folder not accessible (ID: {pair.RemoteFolderId}). Check account and folder config.");
+                _logger.LogError("Remote folder {FolderId} not accessible for pair {Id}. Possibly wrong account or deleted folder.", pair.RemoteFolderId, pair.Id);
+                return;
+            }
         }
-        else
+        catch (Exception ex)
         {
-            // Reconcile: detect local changes that happened while the engine was stopped.
-            // FSW only catches live events — files created/modified/deleted while we were
-            // down are invisible without this scan.
-            SetState(SyncState.Syncing, "Reconciling...");
-            await ReconcileLocalChangesAsync(pair, ct);
+            SetState(SyncState.Error, $"Cannot access Drive folder: {ex.Message}");
+            _logger.LogError(ex, "Failed to access remote folder {FolderId} for pair {Id}", pair.RemoteFolderId, pair.Id);
+            return;
+        }
+
+        // Step 5: Initial sync if no baseline exists, otherwise reconcile
+        var baselineCount = await _stateStore.CountRecordsAsync(pair.Id, SyncSide.Local);
+        try
+        {
+            if (baselineCount == 0)
+            {
+                SetState(SyncState.Syncing, "Initial sync...");
+                await InitialSyncAsync(pair, ct);
+            }
+            else
+            {
+                // Reconcile: detect local changes that happened while the engine was stopped.
+                // FSW only catches live events — files created/modified/deleted while we were
+                // down are invisible without this scan.
+                SetState(SyncState.Syncing, "Reconciling...");
+                await ReconcileLocalChangesAsync(pair, ct);
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Initial sync/reconcile failed for pair {Id}", pair.Id);
+            SetState(SyncState.Error, $"Sync failed: {ex.Message}");
+            return;
         }
 
         SetState(SyncState.Idle);
@@ -413,6 +441,16 @@ public sealed class SyncEngine : ISyncEngine
 
                 var relativePath = await _driveService.GetRelativePathAsync(change.FileId, pair.RemoteFolderId, ct);
                 if (relativePath is null) continue;
+
+                // Safety: reject paths that include Google Drive's virtual root name
+                // (indicates GetRelativePathAsync walked past the sync root folder)
+                if (relativePath.StartsWith("My Drive/", StringComparison.OrdinalIgnoreCase) ||
+                    relativePath.StartsWith("My Drive\\", StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogWarning("Rejected path '{Path}' for change {FileId} — path resolution walked past sync root.", relativePath, change.FileId);
+                    continue;
+                }
+
                 if (!_globFilter.IsIncluded(relativePath, pair)) continue;
 
                 await HandleRemoteChangeAsync(change.File, relativePath, pair, ct);
@@ -449,6 +487,7 @@ public sealed class SyncEngine : ISyncEngine
     private async Task InitialSyncAsync(SyncPair pair, CancellationToken ct)
     {
         _logger.LogInformation("Running initial sync for pair '{Id}'...", pair.Id);
+        const int maxConcurrency = 4;
 
         // Collect remote files into a dictionary for O(1) lookup
         var remoteFiles = new Dictionary<string, Google.Apis.Drive.v3.Data.File>(StringComparer.OrdinalIgnoreCase);
@@ -459,8 +498,13 @@ public sealed class SyncEngine : ISyncEngine
                 remoteFiles[rel] = file;
         }
 
-        // Process local files
+        _logger.LogInformation("Initial sync: found {Remote} remote files for pair '{Id}'.", remoteFiles.Count, pair.Id);
+
+        // Collect local files and categorize them
         var localFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var toUpload = new List<(string absPath, string rel)>();
+        var toBothExist = new List<(string absPath, string rel, Google.Apis.Drive.v3.Data.File remoteFile)>();
+
         foreach (var absPath in Directory.EnumerateFiles(pair.LocalPath, "*", SearchOption.AllDirectories))
         {
             var rel = TryMakeRelative(pair.LocalPath, absPath);
@@ -469,30 +513,54 @@ public sealed class SyncEngine : ISyncEngine
             localFiles.Add(rel);
 
             if (remoteFiles.TryGetValue(rel, out var remoteFile))
-            {
-                // Both exist — check for conflict
-                await HandleBothExistAsync(rel, absPath, remoteFile, pair, ct);
-            }
+                toBothExist.Add((absPath, rel, remoteFile));
             else
+                toUpload.Add((absPath, rel));
+        }
+
+        // Process local directories (ensure empty folders are created on Drive) — sequential (folder creation order matters)
+        foreach (var absDir in Directory.EnumerateDirectories(pair.LocalPath, "*", SearchOption.AllDirectories))
+        {
+            var rel = TryMakeRelative(pair.LocalPath, absDir);
+            if (rel is null || !_globFilter.IsIncluded(rel, pair)) continue;
+            localFiles.Add(rel);
+
+            if (!remoteFiles.ContainsKey(rel))
             {
-                // Local only → upload
-                await UploadLocalFileAsync(absPath, rel, pair, ct);
+                await _driveService.EnsureFolderPathAsync(pair.RemoteFolderId, rel.Replace('/', Path.DirectorySeparatorChar), ct);
+                LogActivity(ActivityType.FolderCreated, rel, details: "Folder synced to Drive");
+                _logger.LogInformation("Folder created on Drive: {Path}", rel);
             }
         }
 
-        // Remote files not in local → download
-        foreach (var (rel, remoteFile) in remoteFiles)
-        {
-            if (!localFiles.Contains(rel))
-                await DownloadRemoteFileAsync(remoteFile, rel, pair, ct);
-        }
+        // Process "both exist" — hash comparison, mostly no transfer (parallel)
+        _logger.LogInformation("Initial sync: {Both} files exist on both sides, {Upload} local-only, {Download} remote-only.",
+            toBothExist.Count, toUpload.Count, remoteFiles.Count(r => !localFiles.Contains(r.Key)));
 
-        // Batch-set all synced files to Synced overlay state
+        await Parallel.ForEachAsync(toBothExist, new ParallelOptions { MaxDegreeOfParallelism = maxConcurrency, CancellationToken = ct },
+            async (item, token) => await HandleBothExistAsync(item.rel, item.absPath, item.remoteFile, pair, token));
+
+        // Upload local-only files (parallel, bounded concurrency)
+        await Parallel.ForEachAsync(toUpload, new ParallelOptions { MaxDegreeOfParallelism = maxConcurrency, CancellationToken = ct },
+            async (item, token) => await UploadLocalFileAsync(item.absPath, item.rel, pair, token));
+
+        // Download remote-only files (parallel, bounded concurrency)
+        var toDownload = remoteFiles.Where(r => !localFiles.Contains(r.Key)).ToList();
+        await Parallel.ForEachAsync(toDownload, new ParallelOptions { MaxDegreeOfParallelism = maxConcurrency, CancellationToken = ct },
+            async (item, token) => await DownloadRemoteFileAsync(item.Value, item.Key, pair, token));
+
+        // Batch-set all synced files and folders to Synced overlay state
         if (_overlayStore is not null)
         {
             try
             {
                 var overlayItems = new List<(string, OverlaySyncState)>();
+                foreach (var absDir in Directory.EnumerateDirectories(pair.LocalPath, "*", SearchOption.AllDirectories))
+                {
+                    var rel = TryMakeRelative(pair.LocalPath, absDir);
+                    if (rel is not null && _globFilter.IsIncluded(rel, pair))
+                        overlayItems.Add((absDir, OverlaySyncState.Synced));
+                }
                 foreach (var absPath in Directory.EnumerateFiles(pair.LocalPath, "*", SearchOption.AllDirectories))
                 {
                     var rel = TryMakeRelative(pair.LocalPath, absPath);
@@ -613,6 +681,7 @@ public sealed class SyncEngine : ISyncEngine
                     ? await _driveService.EnsureFolderPathAsync(pair.RemoteFolderId, parentRel, ct)
                     : pair.RemoteFolderId;
                 await _driveService.EnsureFolderPathAsync(pair.RemoteFolderId, ev.RelativePath.Replace('/', Path.DirectorySeparatorChar), ct);
+                await SetOverlayAsync(ev.RelativePath, OverlaySyncState.Synced, ct);
                 LogActivity(ActivityType.FolderCreated, ev.RelativePath);
                 _logger.LogInformation("Folder created: {Path}", ev.RelativePath);
             }
@@ -620,6 +689,7 @@ public sealed class SyncEngine : ISyncEngine
             {
                 // Folder rename: create new folder path on Drive, move contents will be handled by individual file events
                 await _driveService.EnsureFolderPathAsync(pair.RemoteFolderId, ev.RelativePath.Replace('/', Path.DirectorySeparatorChar), ct);
+                await SetOverlayAsync(ev.RelativePath, OverlaySyncState.Synced, ct);
                 LogActivity(ActivityType.Renamed, ev.RelativePath, details: $"Folder renamed from {ev.OldRelativePath}");
                 _logger.LogInformation("Folder renamed: '{Old}' → '{New}'", ev.OldRelativePath, ev.RelativePath);
             }
@@ -967,6 +1037,7 @@ public sealed class SyncEngine : ISyncEngine
         {
             var folderLocalPath = PathHelper.ToAbsolute(pair.LocalPath, relativePath);
             Directory.CreateDirectory(folderLocalPath);
+            await SetOverlayAsync(relativePath, OverlaySyncState.Synced, ct);
             LogActivity(ActivityType.FolderCreated, relativePath, details: "Remote folder synced locally");
             return;
         }

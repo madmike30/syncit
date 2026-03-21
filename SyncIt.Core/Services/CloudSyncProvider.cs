@@ -338,6 +338,20 @@ public sealed class CloudSyncProvider : IOverlayStateStore
 
         if (hr < 0)
             _logger.LogDebug("CfSetInSyncState failed: 0x{Hr:X8} for {Path}", hr, absolutePath);
+
+        // Pin as "always available on this device" so it shows a green checkmark
+        // instead of a blue cloud ("online-only")
+        if (inSync)
+        {
+            int pinHr = CfApi.CfSetPinState(
+                handle.DangerousGetHandle(),
+                CfApi.CF_PIN_STATE_PINNED,
+                CfApi.CF_SET_PIN_FLAG_NONE,
+                IntPtr.Zero);
+
+            if (pinHr < 0)
+                _logger.LogDebug("CfSetPinState failed: 0x{Hr:X8} for {Path}", pinHr, absolutePath);
+        }
     }
 
     private static SafeFileHandle? OpenFileHandle(string path)
@@ -370,6 +384,11 @@ public sealed class CloudSyncProvider : IOverlayStateStore
 
         // CfSetInSyncState flags
         public const uint CF_SET_IN_SYNC_FLAG_NONE = 0;
+
+        // CfSetPinState values (from cfapi.h)
+        public const uint CF_PIN_STATE_PINNED = 1;
+        public const uint CF_PIN_STATE_UNPINNED = 2;
+        public const uint CF_SET_PIN_FLAG_NONE = 0;
 
         // CfConnectSyncRoot flags
         public const uint CF_CONNECT_FLAG_NONE = 0;
@@ -417,6 +436,13 @@ public sealed class CloudSyncProvider : IOverlayStateStore
         {
             return CfSetInSyncState(fileHandle, inSyncState, flags, out _);
         }
+
+        [DllImport("cldapi.dll", CharSet = CharSet.Unicode)]
+        public static extern int CfSetPinState(
+            IntPtr fileHandle,
+            uint pinState,
+            uint pinFlags,
+            IntPtr overlapped);
 
         [DllImport("cldapi.dll", CharSet = CharSet.Unicode)]
         public static extern int CfConnectSyncRoot(
