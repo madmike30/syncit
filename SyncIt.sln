@@ -11,6 +11,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SyncIt.Tray", "SyncIt.Tray\
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SyncIt.Tests", "SyncIt.Tests\SyncIt.Tests.csproj", "{3AAC2466-D5CE-47F2-98FB-F4CF6FC4280A}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SyncIt.App", "SyncIt.App\SyncIt.App.csproj", "{8CD17EEE-C28C-4B4D-AF39-EE580299D463}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -33,5 +35,9 @@ Global
 		{3AAC2466-D5CE-47F2-98FB-F4CF6FC4280A}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{3AAC2466-D5CE-47F2-98FB-F4CF6FC4280A}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{3AAC2466-D5CE-47F2-98FB-F4CF6FC4280A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8CD17EEE-C28C-4B4D-AF39-EE580299D463}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8CD17EEE-C28C-4B4D-AF39-EE580299D463}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8CD17EEE-C28C-4B4D-AF39-EE580299D463}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8CD17EEE-C28C-4B4D-AF39-EE580299D463}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

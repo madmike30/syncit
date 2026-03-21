@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <UseWindowsForms>true</UseWindowsForms>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>SyncIt</AssemblyName>
+    <RootNamespace>SyncIt.App</RootNamespace>
+    <ApplicationIcon>..\SyncIt.Tray\Resources\icon_idle.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
+    <PackageReference Include="Serilog.Extensions.Hosting" Version="8.0.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="5.0.0" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="5.0.0" />
+    <PackageReference Include="Serilog.Sinks.Async" Version="1.5.0" />
+    <PackageReference Include="Serilog.Enrichers.Environment" Version="2.3.0" />
+    <PackageReference Include="Serilog.Enrichers.Thread" Version="3.1.0" />
+    <PackageReference Include="Serilog.Enrichers.Process" Version="2.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SyncIt.Core\SyncIt.Core.csproj" />
+  </ItemGroup>
+
+  <!-- Reuse tray icons from SyncIt.Tray -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\SyncIt.Tray\Resources\icon_idle.ico" Link="Resources\icon_idle.ico" />
+    <EmbeddedResource Include="..\SyncIt.Tray\Resources\icon_syncing.ico" Link="Resources\icon_syncing.ico" />
+    <EmbeddedResource Include="..\SyncIt.Tray\Resources\icon_paused.ico" Link="Resources\icon_paused.ico" />
+    <EmbeddedResource Include="..\SyncIt.Tray\Resources\icon_error.ico" Link="Resources\icon_error.ico" />
+    <EmbeddedResource Include="..\SyncIt.Tray\Resources\icon_warning.ico" Link="Resources\icon_warning.ico" />
+  </ItemGroup>
+
+</Project>

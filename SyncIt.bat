@@ -1,14 +1,14 @@
 @echo off
 REM SyncIt — Single-click launcher
-REM Builds if needed, then starts the tray app (which launches the service automatically).
-REM Only the tray icon is visible — no console windows.
+REM Builds if needed, then starts the unified app.
+REM Runs as a single process: sync engine + tray icon (like OneDrive / Google Drive).
 
 setlocal
 set "ROOT=%~dp0"
-set "TRAY_EXE=%ROOT%publish\SyncIt.Tray.exe"
+set "APP_EXE=%ROOT%publish\SyncIt.exe"
 
 REM If not published yet, do a quick publish
-if not exist "%TRAY_EXE%" (
+if not exist "%APP_EXE%" (
     echo First run — building SyncIt...
     call "%ROOT%publish.bat"
     if errorlevel 1 (
@@ -18,4 +18,4 @@ if not exist "%TRAY_EXE%" (
     )
 )
 
-start "" "%TRAY_EXE%"
+start "" "%APP_EXE%"
