@@ -24,24 +24,19 @@ A lightweight, bidirectional Google Drive sync tool for Windows. Keep a local fo
 ### Development
 
 ```bash
-run-dev.bat          # builds Debug, launches SyncIt.Tray.exe
-```
-
-Or with the .NET CLI:
-
-```bash
-dotnet run --project SyncIt.Tray
+dotnet run --project SyncIt.App
 ```
 
 ### Release build
 
 ```bash
 publish.bat          # publishes Release binaries to ./publish/
+SyncIt.bat           # auto-publishes on first run, then launches SyncIt.exe
 ```
 
 ### First run
 
-1. Run `SyncIt.Tray.exe` — the tray app launches the background service automatically
+1. Run `SyncIt.exe` (or `dotnet run --project SyncIt.App`)
 2. Sign in with Google when the browser opens
 3. Choose your local sync folder and Drive folder
 4. The tray icon appears — syncing begins
@@ -50,12 +45,12 @@ publish.bat          # publishes Release binaries to ./publish/
 
 ```
 SyncIt.sln
-├── SyncIt.Core/        Core library — models, services, safety, IPC
-├── SyncIt.Service/     Background service (hidden, managed by tray)
-└── SyncIt.Tray/        WinForms system tray application
+├── SyncIt.Core/        Core library — models, services, safety
+├── SyncIt.App/         Unified single-process app (sync engine + tray icon)
+└── SyncIt.Tests/       xUnit test suite (103 tests)
 ```
 
-The tray app runs the service as a child process. They communicate over a named pipe (`SyncItIpc`) using JSON messages. Each sync pair gets its own `SyncEngine` instance with up to 3 parallel transfers.
+Single-process architecture like OneDrive / Google Drive: sync engines run on background threads, tray icon on the WinForms UI thread. No child processes, no IPC.
 
 ## Configuration
 

@@ -9,7 +9,7 @@
     <OutputType>WinExe</OutputType>
     <AssemblyName>SyncIt</AssemblyName>
     <RootNamespace>SyncIt.App</RootNamespace>
-    <ApplicationIcon>..\SyncIt.Tray\Resources\icon_idle.ico</ApplicationIcon>
+    <ApplicationIcon>Resources\icon_idle.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
@@ -27,13 +27,12 @@
     <ProjectReference Include="..\SyncIt.Core\SyncIt.Core.csproj" />
   </ItemGroup>
 
-  <!-- Reuse tray icons from SyncIt.Tray -->
   <ItemGroup>
-    <EmbeddedResource Include="..\SyncIt.Tray\Resources\icon_idle.ico" Link="Resources\icon_idle.ico" />
-    <EmbeddedResource Include="..\SyncIt.Tray\Resources\icon_syncing.ico" Link="Resources\icon_syncing.ico" />
-    <EmbeddedResource Include="..\SyncIt.Tray\Resources\icon_paused.ico" Link="Resources\icon_paused.ico" />
-    <EmbeddedResource Include="..\SyncIt.Tray\Resources\icon_error.ico" Link="Resources\icon_error.ico" />
-    <EmbeddedResource Include="..\SyncIt.Tray\Resources\icon_warning.ico" Link="Resources\icon_warning.ico" />
+    <EmbeddedResource Include="Resources\icon_idle.ico" />
+    <EmbeddedResource Include="Resources\icon_syncing.ico" />
+    <EmbeddedResource Include="Resources\icon_paused.ico" />
+    <EmbeddedResource Include="Resources\icon_error.ico" />
+    <EmbeddedResource Include="Resources\icon_warning.ico" />
   </ItemGroup>
 
 </Project>

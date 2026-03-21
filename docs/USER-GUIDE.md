@@ -51,7 +51,7 @@ The folder ID is the last part: `1AbCdEfGhIjKlMnOpQrStUvWxYz`
 
 ### Step 3: First Run
 
-1. Run `SyncIt.Tray.exe` (or double-click `run-dev.bat` for development)
+1. Run `SyncIt.exe` (or `dotnet run --project SyncIt.App` for development)
 2. On first launch, a browser window opens for Google sign-in
 3. Authorize SyncIt to access your Drive files
 4. The tray icon appears — SyncIt is now running

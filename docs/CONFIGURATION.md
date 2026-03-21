@@ -195,7 +195,7 @@ SyncIt watches `syncit.json` for changes. When the file is saved:
 
 ## Log Configuration
 
-Service logging is configured in `SyncIt.Service/appsettings.json` using Serilog:
+Logging is configured via Serilog in `SyncIt.App/Program.cs`:
 
 - Console output: `Information` level and above
 - File output: `Debug` level and above, daily rolling, 30-day retention

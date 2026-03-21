@@ -2,45 +2,33 @@
 
 ## Overview
 
-SyncIt is a bidirectional Google Drive sync tool for Windows. It consists of three projects that work together:
+SyncIt is a bidirectional Google Drive sync tool for Windows. It runs as a single process — sync engines on background threads, tray icon on the WinForms UI thread — the same architecture used by OneDrive and Google Drive.
 
 ```
 SyncIt.sln
-├── SyncIt.Core/          Shared library — models, services, safety, IPC, helpers
-├── SyncIt.Service/       Windows Service host (BackgroundService)
-└── SyncIt.Tray/          WinForms system tray companion app
+├── SyncIt.Core/          Shared library — models, services, safety, helpers
+├── SyncIt.App/           Unified single-process app (sync engine + tray icon)
+└── SyncIt.Tests/         xUnit test suite (103 tests)
 ```
 
 ## Process Architecture
 
 ```
 ┌─────────────────────────────┐
-│       SyncIt.Tray.exe       │  ← User starts this (single entry point)
-│  (WinForms, system tray)    │
+│         SyncIt.exe          │  ← Single process (like OneDrive)
+│  (WinForms ApplicationContext)  │
 │                             │
-│  Launches service as a      │
-│  hidden child process       │
+│  UI thread: tray icon,     │
+│    context menu, dialogs    │
 │                             │
-│  Named pipe IPC client      │
-└──────────┬──────────────────┘
-           │ Named Pipe (SyncItIpc)
-           │ JSON messages
-┌──────────▼──────────────────┐
-│     SyncIt.Service.exe      │  ← Hidden background process
-│  (Generic Host + Worker)    │
-│                             │
-│  SyncWorker orchestrates    │
-│  one SyncEngine per pair    │
-│                             │
-│  Named pipe IPC server      │
+│  Background threads:        │
+│    SyncEngine per pair,     │
+│    status push loop,        │
+│    config watcher           │
 └─────────────────────────────┘
 ```
 
-The tray app is the only user-visible process. It:
-1. Starts the service as a hidden child process
-2. Communicates via named pipe IPC
-3. Auto-restarts the service if it crashes
-4. Kills the service on exit (via IPC shutdown + process kill fallback)
+Single-instance enforced via global mutex. No child processes, no IPC — the tray calls engine methods directly and marshals UI updates via `InvokeUI()`.
 
 ## Core Library (SyncIt.Core)
 
@@ -54,7 +42,7 @@ The tray app is the only user-visible process. It:
 | `ChangeEvent` | Queued file change from FSW or poll |
 | `DeletionRecord` | Audit entry for every delete operation |
 | `ConflictPolicy` | Conflict resolution settings per sync pair |
-| `SyncStatus` | Status DTOs pushed to tray via IPC |
+| `SyncStatus` | Status DTOs for UI display |
 | `FileTransferProgress` | Per-file upload/download progress tracking |
 | `GoogleDocExportMap` | Google Docs MIME type → Office format mapping |
 
@@ -103,7 +91,7 @@ Files over 5MB use streaming downloads to avoid memory pressure:
 - `AtomicFileWriter.WriteFromCallbackAsync()` — Creates a temp `FileStream` and passes it to the Drive SDK, which writes directly to disk instead of buffering in a `MemoryStream`
 - Google Drive's resumable upload protocol is used automatically for large files
 - `TransferTracker` reports per-file progress via `IProgress<long>` callbacks
-- Progress updates are pushed to the tray via IPC at 1Hz
+- Progress updates are pushed to the UI at 1Hz (throttled)
 
 ### Services
 
@@ -151,21 +139,6 @@ If the threshold is exceeded, ALL pending deletions are frozen and the tray show
 | `CredentialHelper` | Windows Credential Manager + DPAPI for secrets |
 | `ExplorerNotifier` | P/Invoke SHChangeNotify to refresh Explorer overlays |
 
-### IPC Protocol
-
-Tray and service communicate via a named pipe (`SyncItIpc`) using JSON messages:
-
-| Message Type | Direction | Purpose |
-|-------------|-----------|---------|
-| `StatusUpdate` | Service → Tray | Sync status push (per-pair) |
-| `FileTransferUpdate` | Service → Tray | Active transfer progress (1Hz) |
-| `DeletionFreezeTriggered` | Service → Tray | Alert user to frozen deletions |
-| `TriggerSync` | Tray → Service | User requests immediate sync |
-| `Pause` / `Resume` | Tray → Service | Pause/resume syncing |
-| `ApproveDeletions` | Tray → Service | Approve frozen deletions |
-| `CancelDeletions` | Tray → Service | Cancel frozen deletions |
-| `Shutdown` | Tray → Service | Graceful service shutdown |
-
 ## Data Storage
 
 All data is stored under `%APPDATA%\SyncIt\`:
@@ -177,8 +150,7 @@ All data is stored under `%APPDATA%\SyncIt\`:
 | `token.bin` | DPAPI-encrypted binary | OAuth2 refresh token |
 | `state.db` | SQLite (WAL) | File baseline state per sync pair |
 | `delete-journal.db` | SQLite (WAL) | Append-only deletion audit log |
-| `logs/service-*.log` | Text (Serilog) | Service logs (30-day retention) |
-| `logs/tray-*.log` | Text (Serilog) | Tray logs (30-day retention) |
+| `logs/syncit-*.log` | Text (Serilog) | App logs (30-day retention) |
 | `.syncit-trash/` | Directory | Local trash (30-day retention) |
 
 OAuth client credentials (Client ID + Client Secret) are stored in Windows Credential Manager, not in any file.
@@ -228,11 +200,9 @@ No admin elevation, COM registration, or native C++ DLL is required — pure .NE
 
 1. **SQLite over LiteDB/EF Core** — Raw ADO.NET with SQLite gives full control over connection pooling, WAL mode, and cross-process access (needed for overlay DLL).
 
-2. **Named pipes over HTTP/gRPC** — Simpler, faster, and doesn't require port allocation. User-only ACL prevents other users from connecting.
+2. **Single-process architecture** — Sync engines on background threads, tray icon on WinForms UI thread. No IPC, no child processes — simpler than the two-process model and matches OneDrive/Google Drive.
 
-3. **Tray as parent process** — The tray manages the service lifecycle. No Windows Service registration needed — just run the exe.
-
-4. **DPAPI for token encryption** — Windows-native, user-scoped encryption. No master password needed.
+3. **DPAPI for token encryption** — Windows-native, user-scoped encryption. No master password needed.
 
 5. **Atomic file writes** — All downloads go through temp file → verify → rename to prevent partial files on crash.
 

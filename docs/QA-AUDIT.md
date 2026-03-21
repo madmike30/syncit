@@ -1,11 +1,10 @@
 # SyncIt QA Audit Report
 
 ## Project Overview
-SyncIt is a Windows Service that provides bidirectional Google Drive synchronization for a single user's laptop. It consists of three projects:
+SyncIt is a single-process Windows app that provides bidirectional Google Drive synchronization. It consists of:
 
-- **SyncIt.Core** — Shared library (models, services, safety subsystem, IPC, helpers)
-- **SyncIt.Service** — Windows Service host (BackgroundService)
-- **SyncIt.Tray** — WinForms system tray companion app
+- **SyncIt.Core** — Shared library (models, services, safety subsystem, helpers)
+- **SyncIt.App** — Unified app (sync engines on background threads + WinForms tray icon)
 
 ## File Inventory
 
@@ -60,23 +59,20 @@ SyncIt is a Windows Service that provides bidirectional Google Drive synchroniza
 | `IpcMessage.cs` | Message types + payload DTOs |
 | `IpcSerializer.cs` | JSON serialization for pipe protocol |
 
-### Service Host (`SyncIt.Service/`)
+### Unified App (`SyncIt.App/`)
 | File | Purpose |
 |---|---|
-| `Program.cs` | Service entry point, DI, single-instance mutex |
-| `SyncWorker.cs` | BackgroundService orchestrator |
-
-### Tray App (`SyncIt.Tray/`)
-| File | Purpose |
-|---|---|
-| `Program.cs` | Tray entry point |
-| `TrayApp.cs` | Main tray application logic |
-| `TrayIconManager.cs` | System tray icon state management |
-| `StatusForm.cs` | Status display window |
-| `FirstRunForm.cs` | First-run OAuth setup wizard |
-| `DeletionWarningForm.cs` | Deletion freeze approval dialog |
-| `PairPickerDialog.cs` | Sync pair selection |
-| `SelectFoldersForm.cs` | Drive folder browser |
+| `Program.cs` | Entry point, single-instance mutex, Serilog setup |
+| `SyncItApp.cs` | ApplicationContext — owns tray icon + sync engines |
+| `IconManager.cs` | Tray icon state management |
+| `TraySettings.cs` | Tray-only preferences |
+| `AutoStartHelper.cs` | Registry auto-start toggle |
+| `Forms/StatusForm.cs` | Status display window with metrics |
+| `Forms/FirstRunForm.cs` | First-run OAuth setup wizard |
+| `Forms/DeletionWarningForm.cs` | Deletion freeze approval dialog |
+| `Forms/PairPickerDialog.cs` | Sync pair selection |
+| `Forms/SelectFoldersForm.cs` | Drive folder browser |
+| `Forms/ActivityHistoryForm.cs` | Activity history viewer |
 
 ---
 
