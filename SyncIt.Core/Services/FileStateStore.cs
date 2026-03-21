@@ -14,6 +14,7 @@ public sealed class FileStateStore : IFileStateStore
 {
     private readonly string _connectionString;
     private readonly ILogger<FileStateStore> _logger;
+    private bool _pragmasSet;
 
     // Kept alive so named in-memory databases persist across connections.
     private readonly SqliteConnection? _keepAliveConnection;
@@ -62,6 +63,16 @@ public sealed class FileStateStore : IFileStateStore
         await ExecuteNonQueryAsync(conn, """
             CREATE INDEX IF NOT EXISTS idx_records_pair_side
             ON file_records (sync_pair_id, side);
+            """, ct);
+
+        await ExecuteNonQueryAsync(conn, """
+            CREATE INDEX IF NOT EXISTS idx_records_drive_file_id
+            ON file_records (drive_file_id) WHERE drive_file_id IS NOT NULL;
+            """, ct);
+
+        await ExecuteNonQueryAsync(conn, """
+            CREATE INDEX IF NOT EXISTS idx_records_active
+            ON file_records (sync_pair_id, side) WHERE is_deleted = 0;
             """, ct);
 
         await ExecuteNonQueryAsync(conn, """
@@ -155,6 +166,20 @@ public sealed class FileStateStore : IFileStateStore
         cmd.Parameters.AddWithValue("@s", (int)side);
         cmd.Parameters.AddWithValue("@r", relativePath);
         await cmd.ExecuteNonQueryAsync();
+    }
+
+    public async Task<FileRecord?> GetRecordByDriveFileIdAsync(string syncPairId, SyncSide side, string driveFileId)
+    {
+        await using var conn = await OpenAsync();
+        await using var cmd  = conn.CreateCommand();
+        cmd.CommandText =
+            "SELECT * FROM file_records WHERE sync_pair_id=@p AND side=@s AND drive_file_id=@d AND is_deleted=0 LIMIT 1";
+        cmd.Parameters.AddWithValue("@p", syncPairId);
+        cmd.Parameters.AddWithValue("@s", (int)side);
+        cmd.Parameters.AddWithValue("@d", driveFileId);
+
+        await using var reader = await cmd.ExecuteReaderAsync();
+        return await reader.ReadAsync() ? ReadRecord(reader) : null;
     }
 
     // -------------------------------------------------------------------------
@@ -275,12 +300,12 @@ public sealed class FileStateStore : IFileStateStore
         var conn = new SqliteConnection(_connectionString);
         await conn.OpenAsync(ct);
 
-        if (_keepAliveConnection is null)
+        if (!_pragmasSet && _keepAliveConnection is null)
         {
-            // Enable WAL mode for file-based databases
             await using var pragma = conn.CreateCommand();
             pragma.CommandText = "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;";
             await pragma.ExecuteNonQueryAsync(ct);
+            _pragmasSet = true;
         }
 
         return conn;
@@ -293,19 +318,21 @@ public sealed class FileStateStore : IFileStateStore
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
+    // Column order matches: sync_pair_id(0), side(1), relative_path(2), drive_file_id(3),
+    // drive_revision(4), size_bytes(5), modified_utc(6), content_hash(7), is_deleted(8), mime_type(9), recorded_utc(10)
     private static FileRecord ReadRecord(SqliteDataReader r) => new()
     {
-        SyncPairId    = r.GetString(r.GetOrdinal("sync_pair_id")),
-        Side          = (SyncSide)r.GetInt32(r.GetOrdinal("side")),
-        RelativePath  = r.GetString(r.GetOrdinal("relative_path")),
-        DriveFileId   = r.IsDBNull(r.GetOrdinal("drive_file_id"))   ? null : r.GetString(r.GetOrdinal("drive_file_id")),
-        DriveRevisionId = r.IsDBNull(r.GetOrdinal("drive_revision")) ? null : r.GetString(r.GetOrdinal("drive_revision")),
-        SizeBytes     = r.GetInt64(r.GetOrdinal("size_bytes")),
-        ModifiedUtc   = DateTime.Parse(r.GetString(r.GetOrdinal("modified_utc")), null, System.Globalization.DateTimeStyles.RoundtripKind),
-        ContentHash   = r.IsDBNull(r.GetOrdinal("content_hash")) ? null : r.GetString(r.GetOrdinal("content_hash")),
-        IsDeleted     = r.GetInt32(r.GetOrdinal("is_deleted")) == 1,
-        MimeType      = r.IsDBNull(r.GetOrdinal("mime_type"))   ? null : r.GetString(r.GetOrdinal("mime_type")),
-        RecordedUtc   = DateTime.Parse(r.GetString(r.GetOrdinal("recorded_utc")), null, System.Globalization.DateTimeStyles.RoundtripKind),
+        SyncPairId      = r.GetString(0),
+        Side            = (SyncSide)r.GetInt32(1),
+        RelativePath    = r.GetString(2),
+        DriveFileId     = r.IsDBNull(3) ? null : r.GetString(3),
+        DriveRevisionId = r.IsDBNull(4) ? null : r.GetString(4),
+        SizeBytes       = r.GetInt64(5),
+        ModifiedUtc     = DateTime.Parse(r.GetString(6), null, System.Globalization.DateTimeStyles.RoundtripKind),
+        ContentHash     = r.IsDBNull(7) ? null : r.GetString(7),
+        IsDeleted       = r.GetInt32(8) == 1,
+        MimeType        = r.IsDBNull(9) ? null : r.GetString(9),
+        RecordedUtc     = DateTime.Parse(r.GetString(10), null, System.Globalization.DateTimeStyles.RoundtripKind),
     };
 
     private static void AddRecordParams(SqliteCommand cmd, FileRecord r)

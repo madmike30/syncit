@@ -15,6 +15,7 @@ public sealed class ConfigWatcher : IConfigWatcher
 
     private readonly string _configPath;
     private readonly ILogger<ConfigWatcher> _logger;
+    private readonly object _timerLock = new();
     private FileSystemWatcher? _fsw;
     private Timer? _debounceTimer;
 
@@ -53,9 +54,11 @@ public sealed class ConfigWatcher : IConfigWatcher
 
     private void OnChanged(object sender, FileSystemEventArgs e)
     {
-        // Debounce: reset timer on each event
-        _debounceTimer?.Dispose();
-        _debounceTimer = new Timer(_ => TryReload(), null, DebounceDelay, Timeout.InfiniteTimeSpan);
+        lock (_timerLock)
+        {
+            _debounceTimer?.Dispose();
+            _debounceTimer = new Timer(_ => TryReload(), null, DebounceDelay, Timeout.InfiniteTimeSpan);
+        }
     }
 
     private void TryReload()

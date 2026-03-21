@@ -222,14 +222,22 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
 
     public async Task TrashFileAsync(string fileId, CancellationToken ct = default)
     {
-        var update = new DriveFile { Trashed = true };
-        await _retryPolicy.ExecuteAsync(() =>
+        try
         {
-            var request = _drive.Files.Update(update, fileId);
-            request.Fields = "id,trashed";
-            return request.ExecuteAsync(ct);
-        });
-        _logger.LogInformation("Trashed Drive file {FileId}", fileId);
+            var update = new DriveFile { Trashed = true };
+            await _retryPolicy.ExecuteAsync(() =>
+            {
+                var request = _drive.Files.Update(update, fileId);
+                request.Fields = "id,trashed";
+                return request.ExecuteAsync(ct);
+            });
+            _logger.LogInformation("Trashed Drive file {FileId}", fileId);
+        }
+        catch (Google.GoogleApiException ex) when (ex.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            // File already deleted — treat as success (idempotent)
+            _logger.LogDebug("Drive file {FileId} already deleted (404 on trash).", fileId);
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -255,6 +263,7 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
             var request  = _drive.Changes.List(currentToken);
             request.Fields     = "nextPageToken,newStartPageToken,changes(fileId,removed,file(" + FileFields + "))";
             request.PageSize   = 200;
+            request.Spaces     = "drive";
             request.IncludeItemsFromAllDrives = false;
 
             var result = await _retryPolicy.ExecuteAsync(() => request.ExecuteAsync(ct));
@@ -311,10 +320,14 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
 
     public async Task<string?> GetRelativePathAsync(string fileId, string rootFolderId, CancellationToken ct = default)
     {
-        // Try cache-only resolution first (no API calls)
+        // If this IS the root folder, skip it — it's not "inside" itself
+        if (fileId == rootFolderId) return null;
+
+        // Fetch file metadata (needed for name + parent)
         var file = await GetFileAsync(fileId, ct);
         if (file is null) return null;
 
+        // Try cache-only resolution first (avoids parent API calls)
         var cachedPath = _folderCache.TryGetRelativePath(
             fileId, file.Name, rootFolderId, file.Parents?.FirstOrDefault());
         if (cachedPath is not null)
@@ -325,21 +338,22 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
         segments.Push(file.Name);
 
         var parentId = file.Parents?.FirstOrDefault();
-
-        // If this IS the root folder, skip it — it's not "inside" itself
-        if (fileId == rootFolderId) return null;
-
-        // If no parent, can't be inside the root tree
         if (parentId is null) return null;
 
-        // Walk up the parent chain until we reach rootFolderId
         bool reachedRoot = (parentId == rootFolderId);
         for (int depth = 0; depth < 50 && !reachedRoot && parentId is not null; depth++)
         {
+            // Check cache before making API call for each parent
+            if (_folderCache.TryGetRelativePath(parentId, "", rootFolderId, null) is not null)
+            {
+                // Parent chain from here is cached — build remaining path from cache
+                var cached = _folderCache.TryGetRelativePath(fileId, file.Name, rootFolderId, file.Parents?.FirstOrDefault());
+                if (cached is not null) return cached;
+            }
+
             var parent = await GetFileAsync(parentId, ct);
             if (parent is null) return null;
 
-            // Cache the folder for future lookups
             _folderCache.Set(parentId, parent.Name, parent.Parents?.FirstOrDefault());
             segments.Push(parent.Name);
 
@@ -347,7 +361,6 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
             reachedRoot = (parentId == rootFolderId);
         }
 
-        // If we never reached the root folder, this file is outside our tree
         if (!reachedRoot) return null;
 
         return string.Join("/", segments);

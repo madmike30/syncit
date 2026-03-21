@@ -226,16 +226,19 @@ public sealed class DeletionJournal : IDisposable
     // Helpers
     // -------------------------------------------------------------------------
 
+    private bool _pragmasSet;
+
     private async Task<SqliteConnection> OpenAsync(CancellationToken ct = default)
     {
         var conn = new SqliteConnection(_connectionString);
         await conn.OpenAsync(ct);
 
-        if (_keepAliveConnection is null)
+        if (!_pragmasSet && _keepAliveConnection is null)
         {
             await using var pragma = conn.CreateCommand();
             pragma.CommandText = "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;";
             await pragma.ExecuteNonQueryAsync(ct);
+            _pragmasSet = true;
         }
 
         return conn;

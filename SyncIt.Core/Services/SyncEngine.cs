@@ -41,11 +41,14 @@ public sealed class SyncEngine : ISyncEngine
     private readonly ILogger<SyncEngine> _logger;
 
     private FileSystemWatcher? _fsw;
+    private FileSystemEventHandler? _fswCreated, _fswChanged, _fswDeleted;
+    private RenamedEventHandler? _fswRenamed;
+    private ErrorEventHandler? _fswError;
     private CancellationTokenSource? _internalCts;
     private Task? _consumerTask;
     private Task? _pollTask;
     private SyncState _state = SyncState.Idle;
-    private volatile bool _paused;
+    private int _paused; // 0 = running, 1 = paused (accessed via Interlocked/Volatile)
     private string? _lastError;
     private int _filesUploaded, _filesDownloaded, _conflictsResolved, _errors;
 
@@ -98,6 +101,9 @@ public sealed class SyncEngine : ISyncEngine
 
     public async Task StartAsync(SyncPair pair, CancellationToken ct)
     {
+        if (_internalCts is not null)
+            throw new InvalidOperationException("Engine is already running. Call DisposeAsync first.");
+
         _logger.LogInformation("Starting sync engine for pair '{Id}': {Local} ↔ {Remote}",
             pair.Id, pair.LocalPath, pair.RemoteFolderName);
 
@@ -170,8 +176,8 @@ public sealed class SyncEngine : ISyncEngine
         _logger.LogInformation("Sync engine started for pair '{Id}'.", pair.Id);
     }
 
-    public void Pause()  { _paused = true;  SetState(SyncState.Paused); }
-    public void Resume() { _paused = false; SetState(SyncState.Idle); }
+    public void Pause()  { Interlocked.Exchange(ref _paused, 1); SetState(SyncState.Paused); }
+    public void Resume() { Interlocked.Exchange(ref _paused, 0); SetState(SyncState.Idle); }
 
     public async Task TriggerSyncAsync(CancellationToken ct)
     {
@@ -206,11 +212,17 @@ public sealed class SyncEngine : ISyncEngine
             EnableRaisingEvents   = true,
         };
 
-        _fsw.Created += (_, e) => OnLocalChange(pair, ChangeKind.Created,  e.FullPath);
-        _fsw.Changed += (_, e) => OnLocalChange(pair, ChangeKind.Modified, e.FullPath);
-        _fsw.Deleted += (_, e) => OnLocalChange(pair, ChangeKind.Deleted,  e.FullPath);
-        _fsw.Renamed += (_, e) => OnLocalRename(pair, e.OldFullPath, e.FullPath);
-        _fsw.Error   += (_, e) => _logger.LogWarning(e.GetException(), "FSW error for pair {Id}", pair.Id);
+        _fswCreated = (_, e) => OnLocalChange(pair, ChangeKind.Created,  e.FullPath);
+        _fswChanged = (_, e) => OnLocalChange(pair, ChangeKind.Modified, e.FullPath);
+        _fswDeleted = (_, e) => OnLocalChange(pair, ChangeKind.Deleted,  e.FullPath);
+        _fswRenamed = (_, e) => OnLocalRename(pair, e.OldFullPath, e.FullPath);
+        _fswError   = (_, e) => _logger.LogWarning(e.GetException(), "FSW error for pair {Id}", pair.Id);
+
+        _fsw.Created += _fswCreated;
+        _fsw.Changed += _fswChanged;
+        _fsw.Deleted += _fswDeleted;
+        _fsw.Renamed += _fswRenamed;
+        _fsw.Error   += _fswError;
 
         _logger.LogDebug("FileSystemWatcher set up for {Path}", pair.LocalPath);
     }
@@ -286,7 +298,7 @@ public sealed class SyncEngine : ISyncEngine
             {
                 await Task.Delay(TimeSpan.FromSeconds(_config.PollIntervalSeconds), ct);
 
-                if (_paused) continue;
+                if (Volatile.Read(ref _paused) == 1) continue;
 
                 await RunSyncCycleAsync(pair, ct);
                 consecutiveErrors = 0;
@@ -327,7 +339,7 @@ public sealed class SyncEngine : ISyncEngine
         await foreach (var change in _changeQueue.ReadAllAsync(ct))
         {
             // While paused, wait instead of dropping events
-            while (_paused && !ct.IsCancellationRequested)
+            while (Volatile.Read(ref _paused) == 1 && !ct.IsCancellationRequested)
                 await Task.Delay(500, ct);
 
             try
@@ -348,7 +360,7 @@ public sealed class SyncEngine : ISyncEngine
             }
             catch (Exception ex)
             {
-                _errors++;
+                Interlocked.Increment(ref _errors);
                 _metrics.RecordError();
                 _lastError = ex.Message;
                 LogActivity(ActivityType.Error, change.RelativePath, details: ex.Message);
@@ -411,7 +423,7 @@ public sealed class SyncEngine : ISyncEngine
         catch (Exception ex)
         {
             _metrics.EndCycle();
-            _errors++;
+            Interlocked.Increment(ref _errors);
             _metrics.RecordError();
             _lastError = ex.Message;
             LogActivity(ActivityType.Error, "", details: $"Sync cycle failed: {ex.Message}");
@@ -687,7 +699,7 @@ public sealed class SyncEngine : ISyncEngine
 
                 TransferTracker.Complete(pair.Id, ev.RelativePath);
                 await SetOverlayAsync(ev.RelativePath, OverlaySyncState.Synced, ct);
-                _filesUploaded++;
+                Interlocked.Increment(ref _filesUploaded);
                 _metrics.RecordUpload(updatedLocalMeta.Length);
                 LogActivity(ActivityType.Upload, ev.RelativePath, updatedLocalMeta.Length);
                 _logger.LogInformation("Updated: {Path}", ev.RelativePath);
@@ -773,11 +785,7 @@ public sealed class SyncEngine : ISyncEngine
         // path, this is a rename/move. Clean up the old local file and baselines.
         if (remoteBaseline is null && file.Id is not null)
         {
-            FileRecord? oldRemote = null;
-            await foreach (var rec in _stateStore.StreamRecordsAsync(pair.Id, SyncSide.Remote, ct))
-            {
-                if (rec.DriveFileId == file.Id) { oldRemote = rec; break; }
-            }
+            var oldRemote = await _stateStore.GetRecordByDriveFileIdAsync(pair.Id, SyncSide.Remote, file.Id);
 
             if (oldRemote is not null && !string.Equals(oldRemote.RelativePath, relativePath, StringComparison.OrdinalIgnoreCase))
             {
@@ -827,11 +835,7 @@ public sealed class SyncEngine : ISyncEngine
     private async Task HandleRemoteDeleteAsync(string driveFileId, SyncPair pair, CancellationToken ct)
     {
         // Find by driveFileId since we only have the ID, not the path
-        FileRecord? found = null;
-        await foreach (var rec in _stateStore.StreamRecordsAsync(pair.Id, SyncSide.Remote, ct))
-        {
-            if (rec.DriveFileId == driveFileId) { found = rec; break; }
-        }
+        var found = await _stateStore.GetRecordByDriveFileIdAsync(pair.Id, SyncSide.Remote, driveFileId);
         if (found is null) return;
 
         // Check if local file was modified since our baseline — if so, keep it (local wins)
@@ -917,7 +921,7 @@ public sealed class SyncEngine : ISyncEngine
 
             TransferTracker.Complete(pair.Id, relativePath);
             await SetOverlayAsync(relativePath, OverlaySyncState.Synced, ct);
-            _filesUploaded++;
+            Interlocked.Increment(ref _filesUploaded);
             _metrics.RecordUpload(localMeta.Length);
             LogActivity(ActivityType.Upload, relativePath, localMeta.Length);
             _logger.LogInformation("Uploaded: {Path}", relativePath);
@@ -1040,7 +1044,7 @@ public sealed class SyncEngine : ISyncEngine
 
             TransferTracker.Complete(pair.Id, relativePath);
             await SetOverlayAsync(relativePath, OverlaySyncState.Synced, ct);
-            _filesDownloaded++;
+            Interlocked.Increment(ref _filesDownloaded);
             _metrics.RecordDownload(file.Size ?? 0);
             LogActivity(ActivityType.Download, relativePath, file.Size ?? 0);
             _logger.LogInformation("Downloaded: {Path}", relativePath);
@@ -1137,7 +1141,7 @@ public sealed class SyncEngine : ISyncEngine
                 break;
         }
 
-        _conflictsResolved++;
+        Interlocked.Increment(ref _conflictsResolved);
         LogActivity(ActivityType.ConflictResolved, relativePath, details: action.ReasonDescription);
     }
 
@@ -1147,13 +1151,24 @@ public sealed class SyncEngine : ISyncEngine
 
     private void LogActivity(ActivityType type, string relativePath, long sizeBytes = 0, string? details = null)
     {
-        _ = _activityLog?.RecordAsync(new ActivityRecord
+        if (_activityLog is null) return;
+        _ = Task.Run(async () =>
         {
-            SyncPairId = _pair.Id,
-            Type = type,
-            RelativePath = relativePath,
-            SizeBytes = sizeBytes,
-            Details = details,
+            try
+            {
+                await _activityLog.RecordAsync(new ActivityRecord
+                {
+                    SyncPairId = _pair.Id,
+                    Type = type,
+                    RelativePath = relativePath,
+                    SizeBytes = sizeBytes,
+                    Details = details,
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Failed to record activity log for {Type} '{Path}'", type, relativePath);
+            }
         });
     }
 
@@ -1268,14 +1283,25 @@ public sealed class SyncEngine : ISyncEngine
             if (_pollTask is not null) tasks.Add(_pollTask);
             if (tasks.Count > 0)
             {
-                try { await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(10)); }
-                catch (Exception ex) { _logger.LogDebug(ex, "Timeout waiting for engine tasks to stop."); }
+                try { await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(30)); }
+                catch (TimeoutException) { _logger.LogWarning("Engine tasks did not complete within 30s timeout."); }
+                catch (Exception ex) { _logger.LogDebug(ex, "Error waiting for engine tasks to stop."); }
             }
 
             _internalCts.Dispose();
         }
 
-        _fsw?.Dispose();
+        // Unsubscribe FSW handlers before disposing to prevent leaks
+        if (_fsw is not null)
+        {
+            _fsw.EnableRaisingEvents = false;
+            if (_fswCreated is not null) _fsw.Created -= _fswCreated;
+            if (_fswChanged is not null) _fsw.Changed -= _fswChanged;
+            if (_fswDeleted is not null) _fsw.Deleted -= _fswDeleted;
+            if (_fswRenamed is not null) _fsw.Renamed -= _fswRenamed;
+            if (_fswError is not null)   _fsw.Error   -= _fswError;
+            _fsw.Dispose();
+        }
         _transferSlim.Dispose();
         if (_changeQueue is IDisposable d) d.Dispose();
     }

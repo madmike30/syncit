@@ -210,8 +210,8 @@ public sealed class SyncItApp : ApplicationContext
                 deletionCoord, globFilter, changeQueue, safetyValidator,
                 atomicWriter, CreateLogger<SyncEngine>(), _overlayStore, _activityLog, retryTracker);
 
-            engine.StatusChanged += _ => OnEngineStatusChanged();
-            engine.TransferTracker.ProgressChanged += _ => ThrottledTransferPush();
+            engine.StatusChanged += OnEngineStatusChanged;
+            engine.TransferTracker.ProgressChanged += OnTransferProgress;
 
             _engines.Add(engine);
             await engine.StartAsync(pair, ct);
@@ -222,6 +222,15 @@ public sealed class SyncItApp : ApplicationContext
 
     private async Task StopEnginesAsync()
     {
+        // Unsubscribe event handlers BEFORE disposing to prevent leaks
+        foreach (var engine in _engines)
+        {
+            engine.StatusChanged -= OnEngineStatusChanged;
+            engine.TransferTracker.ProgressChanged -= OnTransferProgress;
+        }
+        foreach (var coord in _deletionCoordinators)
+            coord.DeletionFreezeTriggered -= OnDeletionFreezeTriggered;
+
         foreach (var engine in _engines)
         {
             try { await engine.DisposeAsync(); }
@@ -260,7 +269,8 @@ public sealed class SyncItApp : ApplicationContext
         }
     }
 
-    private void OnEngineStatusChanged() => PushStatus();
+    private void OnEngineStatusChanged(SyncPairStatus _) => PushStatus();
+    private void OnTransferProgress(FileTransferProgress _) => ThrottledTransferPush();
 
     private void PushStatus()
     {
@@ -496,11 +506,16 @@ public sealed class SyncItApp : ApplicationContext
         _autoStartItem.Checked = AutoStartHelper.IsEnabled;
     }
 
-    private void OnExit(object? sender, EventArgs e)
+    private async void OnExit(object? sender, EventArgs e)
     {
         _dashboard?.Close();
         _notifyIcon.Visible = false;
         _engineCts.Cancel();
+
+        // Wait for engines to shut down gracefully (flush DB, release file handles)
+        try { await StopEnginesAsync(); }
+        catch (Exception ex) { _logger.LogWarning(ex, "Error during graceful shutdown."); }
+
         Application.Exit();
     }
 

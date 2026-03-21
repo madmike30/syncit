@@ -5,10 +5,12 @@ namespace SyncIt.Core.Services;
 /// <summary>
 /// In-memory cache mapping Drive folder IDs to (name, parentId) pairs.
 /// Used to resolve relative paths without extra API calls.
-/// Thread-safe via ConcurrentDictionary.
+/// Thread-safe via ConcurrentDictionary. Evicts oldest entries when MaxSize is exceeded.
 /// </summary>
 public sealed class DriveFolderCache
 {
+    private const int MaxSize = 5000;
+
     private readonly ConcurrentDictionary<string, FolderInfo> _cache = new();
 
     /// <summary>Number of cached entries.</summary>
@@ -17,7 +19,11 @@ public sealed class DriveFolderCache
     /// <summary>Add or update a folder entry in the cache.</summary>
     public void Set(string folderId, string name, string? parentId)
     {
-        _cache[folderId] = new FolderInfo(name, parentId);
+        _cache[folderId] = new FolderInfo(name, parentId, Environment.TickCount64);
+
+        // Evict oldest entries if over capacity
+        if (_cache.Count > MaxSize)
+            EvictOldest(MaxSize / 5); // Remove 20% to avoid frequent evictions
     }
 
     /// <summary>
@@ -64,5 +70,18 @@ public sealed class DriveFolderCache
     /// <summary>Clear all cached entries.</summary>
     public void Invalidate() => _cache.Clear();
 
-    private record FolderInfo(string Name, string? ParentId);
+    private void EvictOldest(int count)
+    {
+        // Find the oldest entries by LastAccessTicks
+        var oldest = _cache
+            .OrderBy(kv => kv.Value.LastAccessTicks)
+            .Take(count)
+            .Select(kv => kv.Key)
+            .ToList();
+
+        foreach (var key in oldest)
+            _cache.TryRemove(key, out _);
+    }
+
+    private record FolderInfo(string Name, string? ParentId, long LastAccessTicks);
 }

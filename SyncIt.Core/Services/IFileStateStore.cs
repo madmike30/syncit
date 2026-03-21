@@ -30,6 +30,9 @@ public interface IFileStateStore : IDisposable
     /// <summary>Remove a record entirely from the baseline.</summary>
     Task RemoveRecordAsync(string syncPairId, SyncSide side, string relativePath);
 
+    /// <summary>Find a record by Drive file ID (uses indexed lookup instead of full scan).</summary>
+    Task<FileRecord?> GetRecordByDriveFileIdAsync(string syncPairId, SyncSide side, string driveFileId);
+
     // -------------------------------------------------------------------------
     // Streaming enumeration (used during sync cycles — never ToList())
     // -------------------------------------------------------------------------

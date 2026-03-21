@@ -189,6 +189,8 @@ public sealed class AtomicFileWriter
     /// FileSystemWatcher event handlers should ignore events for paths that return true.
     /// Also cleans up expired entries.
     /// </summary>
+    private int _cleanupCounter;
+
     public bool IsInProgress(string path)
     {
         if (_recentWrites.TryGetValue(path, out var expiry))
@@ -199,6 +201,21 @@ public sealed class AtomicFileWriter
             // Expired — clean up
             _recentWrites.TryRemove(path, out _);
         }
+
+        // Every 100 calls, purge all expired entries to prevent unbounded growth
+        if (Interlocked.Increment(ref _cleanupCounter) % 100 == 0)
+            PurgeExpired();
+
         return false;
+    }
+
+    private void PurgeExpired()
+    {
+        var now = DateTimeOffset.UtcNow;
+        foreach (var kvp in _recentWrites)
+        {
+            if (now >= kvp.Value)
+                _recentWrites.TryRemove(kvp.Key, out _);
+        }
     }
 }

@@ -22,6 +22,7 @@ public sealed class ActivityLog : IActivityLog
     private readonly string _connectionString;
     private readonly ILogger<ActivityLog> _logger;
     private readonly SqliteConnection? _keepAliveConnection;
+    private bool _pragmasSet;
 
     public ActivityLog(string dbPath, ILogger<ActivityLog> logger)
     {
@@ -100,22 +101,20 @@ public sealed class ActivityLog : IActivityLog
         }
         cmd.Parameters.AddWithValue("@limit", limit);
 
-        var results = new List<ActivityRecord>();
+        // Column order: id(0), sync_pair_id(1), type(2), relative_path(3), size_bytes(4), timestamp_utc(5), details(6)
+        var results = new List<ActivityRecord>(Math.Min(limit, 256));
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
             results.Add(new ActivityRecord
             {
-                Id = reader.GetInt64(reader.GetOrdinal("id")),
-                SyncPairId = reader.GetString(reader.GetOrdinal("sync_pair_id")),
-                Type = (ActivityType)reader.GetInt32(reader.GetOrdinal("type")),
-                RelativePath = reader.GetString(reader.GetOrdinal("relative_path")),
-                SizeBytes = reader.GetInt64(reader.GetOrdinal("size_bytes")),
-                TimestampUtc = DateTime.Parse(reader.GetString(reader.GetOrdinal("timestamp_utc")),
-                    null, System.Globalization.DateTimeStyles.RoundtripKind),
-                Details = reader.IsDBNull(reader.GetOrdinal("details"))
-                    ? null
-                    : reader.GetString(reader.GetOrdinal("details")),
+                Id           = reader.GetInt64(0),
+                SyncPairId   = reader.GetString(1),
+                Type         = (ActivityType)reader.GetInt32(2),
+                RelativePath = reader.GetString(3),
+                SizeBytes    = reader.GetInt64(4),
+                TimestampUtc = DateTime.Parse(reader.GetString(5), null, System.Globalization.DateTimeStyles.RoundtripKind),
+                Details      = reader.IsDBNull(6) ? null : reader.GetString(6),
             });
         }
 
@@ -126,12 +125,18 @@ public sealed class ActivityLog : IActivityLog
     {
         var cutoff = DateTime.UtcNow.AddDays(-maxAgeDays).ToString("O");
         await using var conn = await OpenAsync(ct);
+
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = "DELETE FROM activity_records WHERE timestamp_utc < @cutoff";
         cmd.Parameters.AddWithValue("@cutoff", cutoff);
         var deleted = await cmd.ExecuteNonQueryAsync(ct);
         if (deleted > 0)
             _logger.LogInformation("Pruned {Count} activity records older than {Days} days.", deleted, maxAgeDays);
+
+        // Reclaim space after pruning
+        await using var wal = conn.CreateCommand();
+        wal.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
+        await wal.ExecuteNonQueryAsync(ct);
     }
 
     private async Task<SqliteConnection> OpenAsync(CancellationToken ct = default)
@@ -139,11 +144,12 @@ public sealed class ActivityLog : IActivityLog
         var conn = new SqliteConnection(_connectionString);
         await conn.OpenAsync(ct);
 
-        if (_keepAliveConnection is null)
+        if (!_pragmasSet && _keepAliveConnection is null)
         {
             await using var pragma = conn.CreateCommand();
             pragma.CommandText = "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;";
             await pragma.ExecuteNonQueryAsync(ct);
+            _pragmasSet = true;
         }
 
         return conn;

@@ -4,10 +4,12 @@ namespace SyncIt.Core.IO;
 /// Stream wrapper that limits read/write throughput using a token-bucket algorithm.
 /// Set MaxBytesPerSecond to 0 for unlimited throughput.
 /// The rate can be changed dynamically at any time.
+/// Thread-safe: uses a lock to protect window state.
 /// </summary>
 public sealed class ThrottledStream : Stream
 {
     private readonly Stream _inner;
+    private readonly object _throttleLock = new();
     private long _bytesInCurrentWindow;
     private long _windowStartTicks;
 
@@ -78,25 +80,36 @@ public sealed class ThrottledStream : Stream
         var limit = MaxBytesPerSecond;
         if (limit <= 0) return;
 
-        var now = Environment.TickCount64;
-        var elapsed = now - _windowStartTicks;
-
-        if (elapsed >= 1000)
+        int delayMs;
+        lock (_throttleLock)
         {
-            // Start a new window
-            _windowStartTicks = now;
-            _bytesInCurrentWindow = 0;
+            var now = Environment.TickCount64;
+            var elapsed = now - _windowStartTicks;
+
+            if (elapsed >= 1000)
+            {
+                _windowStartTicks = now;
+                _bytesInCurrentWindow = 0;
+            }
+
+            _bytesInCurrentWindow += requestedBytes;
+
+            if (_bytesInCurrentWindow > limit)
+            {
+                var remainingMs = 1000 - (int)(now - _windowStartTicks);
+                delayMs = remainingMs > 0 ? remainingMs : 0;
+            }
+            else
+            {
+                delayMs = 0;
+            }
         }
 
-        _bytesInCurrentWindow += requestedBytes;
-
-        if (_bytesInCurrentWindow > limit)
+        if (delayMs > 0)
         {
-            // Calculate how long to wait before the next window
-            var remainingMs = 1000 - (int)(now - _windowStartTicks);
-            if (remainingMs > 0)
+            await Task.Delay(delayMs, ct);
+            lock (_throttleLock)
             {
-                await Task.Delay(remainingMs, ct);
                 _windowStartTicks = Environment.TickCount64;
                 _bytesInCurrentWindow = 0;
             }
