@@ -431,12 +431,13 @@ public sealed class DashboardForm : Form
                 Text      = "Change folder",
                 Font      = new Font("Segoe UI", 8.5f),
                 AutoSize  = true,
-                Location  = new Point(card.Width - 120, 10),
+                Location  = new Point(Math.Max(200, card.Width - 120), 10),
                 Anchor    = AnchorStyles.Top | AnchorStyles.Right,
                 LinkColor = AccentBlue,
+                Cursor    = Cursors.Hand,
             };
             var pairId = pair.SyncPairId;
-            changeFolderBtn.Click += (_, _) => _changeSyncFolder(pairId);
+            changeFolderBtn.LinkClicked += (_, _) => _changeSyncFolder(pairId);
 
             if (pair.PendingChanges > 0 || pair.PendingDeletions > 0)
             {

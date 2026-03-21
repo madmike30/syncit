@@ -455,7 +455,11 @@ public sealed class SyncItApp : ApplicationContext
     private void ChangeSyncFolder(string pairId)
     {
         var pair = _config.SyncPairs.FirstOrDefault(p => p.Id == pairId);
-        if (pair is null) return;
+        if (pair is null)
+        {
+            _logger.LogWarning("ChangeSyncFolder: pair '{PairId}' not found in config.", pairId);
+            return;
+        }
 
         using var dialog = new FolderBrowserDialog
         {
@@ -465,7 +469,9 @@ public sealed class SyncItApp : ApplicationContext
             ShowNewFolderButton = true,
         };
 
-        if (dialog.ShowDialog() != DialogResult.OK) return;
+        // Use dashboard as owner so the dialog appears in front
+        var owner = _dashboard is not null && !_dashboard.IsDisposed ? _dashboard : null;
+        if (dialog.ShowDialog(owner) != DialogResult.OK) return;
 
         var newPath = dialog.SelectedPath;
         if (string.Equals(PathHelper.Expand(pair.LocalPath), newPath, StringComparison.OrdinalIgnoreCase))
