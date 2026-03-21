@@ -103,6 +103,47 @@ public sealed class SyncItApp : ApplicationContext
                 await File.ReadAllTextAsync(ConfigPath, ct), JsonOpts)
                 ?? throw new InvalidOperationException("Failed to parse syncit.json");
 
+            // Migrate: ensure all pairs use Drive root ("root") as their remote base
+            foreach (var pair in _config.SyncPairs)
+            {
+                if (pair.RemoteFolderId != "root" && !string.IsNullOrEmpty(pair.RemoteFolderId))
+                {
+                    _logger.LogInformation(
+                        "Migrating pair '{Id}' from folder '{OldFolder}' to Drive root. " +
+                        "Previous folder will be added to SelectedSubfolders.",
+                        pair.Id, pair.RemoteFolderName);
+
+                    // Add the old folder name as a selected subfolder (if not already present)
+                    var oldName = pair.RemoteFolderName.Replace("My Drive / ", "").Trim();
+                    if (!string.IsNullOrEmpty(oldName) && !pair.SelectedSubfolders.Contains(oldName, StringComparer.OrdinalIgnoreCase))
+                        pair.SelectedSubfolders.Add(oldName);
+
+                    pair.RemoteFolderId   = "root";
+                    pair.RemoteFolderName = "My Drive";
+
+                    // Save migrated config
+                    var writeOpts = new JsonSerializerOptions
+                    {
+                        PropertyNameCaseInsensitive = true,
+                        WriteIndented               = true,
+                        Converters                  = { new JsonStringEnumConverter() },
+                    };
+                    await File.WriteAllTextAsync(ConfigPath, JsonSerializer.Serialize(_config, writeOpts), ct);
+
+                    // Reset state DBs since the remote root changed
+                    foreach (var db in new[] { _config.StateDbPath, _config.DeleteJournalPath })
+                    {
+                        var path = PathHelper.Expand(db);
+                        foreach (var ext in new[] { "", "-shm", "-wal" })
+                        {
+                            var f = path + ext;
+                            try { if (File.Exists(f)) File.Delete(f); }
+                            catch (IOException ex) { _logger.LogWarning(ex, "Could not delete {File}", f); }
+                        }
+                    }
+                }
+            }
+
             // Initialize databases
             var stateStore = CreateStateStore();
             await stateStore.InitializeAsync(ct);
@@ -447,7 +488,6 @@ public sealed class SyncItApp : ApplicationContext
             changeSyncFolder: pairId => ChangeSyncFolder(pairId),
             openSyncFolder:   () => OpenSyncFolder(),
             showAccountForm:  () => ShowAccountForm(),
-            changeDriveFolder: pairId => ChangeDriveFolder(pairId),
             selectSubfolders:  pairId => SelectSubfolders(pairId)
         );
         _dashboard.FormClosed += (_, _) => _dashboard = null;
@@ -591,56 +631,6 @@ public sealed class SyncItApp : ApplicationContext
         form.ShowDialog();
     }
 
-    private void ChangeDriveFolder(string pairId)
-    {
-        if (_driveService is null)
-        {
-            MessageBox.Show("Not connected to Google Drive yet.", "SyncIt",
-                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        using var picker = new DriveFolderPickerForm(_driveService);
-        if (picker.ShowDialog() != DialogResult.OK) return;
-
-        var newFolderId   = picker.SelectedFolderId!;
-        var newFolderName = picker.SelectedFolderName!;
-
-        try
-        {
-            var json   = File.ReadAllText(ConfigPath);
-            var config = JsonSerializer.Deserialize<SyncConfig>(json, JsonOpts);
-            if (config is null) return;
-
-            var cfgPair = config.SyncPairs.FirstOrDefault(p => p.Id == pairId);
-            if (cfgPair is null) return;
-
-            cfgPair.RemoteFolderId   = newFolderId;
-            cfgPair.RemoteFolderName = newFolderName;
-            cfgPair.SelectedSubfolders = new List<string>(); // Reset — new folder has different subfolders
-
-            var writeOpts = new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true,
-                WriteIndented               = true,
-                Converters                  = { new JsonStringEnumConverter() },
-            };
-            File.WriteAllText(ConfigPath, JsonSerializer.Serialize(config, writeOpts));
-
-            var selectResult = MessageBox.Show(
-                $"Drive folder changed to:\n{newFolderName}\n\nWould you like to select specific folders to sync?\nClick No to sync everything.",
-                "SyncIt", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-
-            if (selectResult == DialogResult.Yes)
-                SelectSubfolders(pairId);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Failed to update config:\n{ex.Message}", "SyncIt",
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
-    }
-
     private void OnSwitchAccount(object? sender, EventArgs e) => ShowAccountForm();
 
     private void ShowAccountForm()
@@ -703,36 +693,24 @@ public sealed class SyncItApp : ApplicationContext
             _logger.LogInformation("Reset state databases for account switch.");
         });
 
-        // 7. Validate configured Drive folder is accessible with new account
+        // 7. Ensure all pairs use Drive root and prompt for folder selection
         var firstPair = _config.SyncPairs.FirstOrDefault(p => p.Enabled);
         if (firstPair is not null)
         {
-            try
+            // Migrate to Drive root if needed
+            if (firstPair.RemoteFolderId != "root")
             {
-                var testFile = await Task.Run(() => driveService.GetFileAsync(firstPair.RemoteFolderId));
-                if (testFile is null)
-                {
-                    // Folder not accessible — prompt user to pick a new one
-                    _logger.LogWarning("Configured Drive folder '{Name}' (ID: {Id}) not accessible with {Email}.",
-                        firstPair.RemoteFolderName, firstPair.RemoteFolderId, _accountInfo.Email);
-
-                    var result = MessageBox.Show(
-                        $"The configured Drive folder \"{firstPair.RemoteFolderName}\" is not accessible with {_accountInfo.Email}.\n\n" +
-                        "Would you like to select a different Drive folder?",
-                        "SyncIt — Folder Not Accessible", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-
-                    if (result == DialogResult.Yes)
-                        ChangeDriveFolder(firstPair.Id);
-                }
+                firstPair.RemoteFolderId   = "root";
+                firstPair.RemoteFolderName = "My Drive";
             }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to validate Drive folder access after account switch.");
-                MessageBox.Show(
-                    $"Cannot access the configured Drive folder with {_accountInfo.Email}.\n\n" +
-                    "Please reconfigure the Drive folder via the Dashboard.",
-                    "SyncIt — Folder Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
+
+            // Prompt to select which folders to sync with new account
+            var selectResult = MessageBox.Show(
+                $"Switched to {_accountInfo.Email}.\n\nWould you like to select which Drive folders to sync?",
+                "SyncIt", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+
+            if (selectResult == DialogResult.Yes)
+                SelectSubfolders(firstPair.Id);
         }
 
         // 8. Recreate activity log (old DB was deleted)

@@ -34,7 +34,6 @@ public sealed class DashboardForm : Form
     private readonly Func<bool> _isPaused;
     private readonly Func<Task<List<ActivityRecord>?>> _fetchActivity;
     private readonly Action<string> _changeSyncFolder;       // pairId
-    private readonly Action<string> _changeDriveFolder;     // pairId
     private readonly Action<string> _selectSubfolders;      // pairId
     private readonly Action _openSyncFolder;
     private readonly Action? _showAccountForm;
@@ -62,7 +61,6 @@ public sealed class DashboardForm : Form
         Action<string> changeSyncFolder,
         Action openSyncFolder,
         Action? showAccountForm = null,
-        Action<string>? changeDriveFolder = null,
         Action<string>? selectSubfolders = null)
     {
         _getStatus        = getStatus;
@@ -72,7 +70,6 @@ public sealed class DashboardForm : Form
         _isPaused         = isPaused;
         _fetchActivity    = fetchActivity;
         _changeSyncFolder = changeSyncFolder;
-        _changeDriveFolder = changeDriveFolder ?? (_ => { });
         _selectSubfolders  = selectSubfolders ?? (_ => { });
         _openSyncFolder   = openSyncFolder;
         _showAccountForm  = showAccountForm;
@@ -350,19 +347,6 @@ public sealed class DashboardForm : Form
         }
     }
 
-    private void OnChangeDriveFolderClick(string pairId)
-    {
-        _refreshTimer?.Stop();
-        try
-        {
-            _changeDriveFolder(pairId);
-        }
-        finally
-        {
-            _refreshTimer?.Start();
-        }
-    }
-
     private void RefreshUI()
     {
         var status = _getStatus();
@@ -449,7 +433,7 @@ public sealed class DashboardForm : Form
 
             var nameLabel = new Label
             {
-                Text      = pair.RemoteFolderName,
+                Text      = "Google Drive",
                 Font      = new Font("Segoe UI", 10f, FontStyle.Bold),
                 ForeColor = Color.FromArgb(30, 30, 30),
                 AutoSize  = true,
@@ -522,27 +506,12 @@ public sealed class DashboardForm : Form
                 BackColor = CardBg,
                 FlatStyle = FlatStyle.Flat,
                 Size      = new Size(95, 24),
-                Location  = new Point(Math.Max(140, card.Width - 346), 8),
+                Location  = new Point(Math.Max(140, card.Width - 216), 8),
                 Anchor    = AnchorStyles.Top | AnchorStyles.Right,
                 Cursor    = Cursors.Hand,
             };
             selectFoldersBtn.FlatAppearance.BorderColor = CardBorder;
             selectFoldersBtn.Click += (_, _) => OnSelectSubfoldersClick(pairId);
-
-            var changeDriveFolderBtn = new Button
-            {
-                Text      = "Change Drive folder",
-                Font      = new Font("Segoe UI", 8f),
-                ForeColor = AccentBlue,
-                BackColor = CardBg,
-                FlatStyle = FlatStyle.Flat,
-                Size      = new Size(130, 24),
-                Location  = new Point(Math.Max(240, card.Width - 246), 8),
-                Anchor    = AnchorStyles.Top | AnchorStyles.Right,
-                Cursor    = Cursors.Hand,
-            };
-            changeDriveFolderBtn.FlatAppearance.BorderColor = CardBorder;
-            changeDriveFolderBtn.Click += (_, _) => OnChangeDriveFolderClick(pairId);
 
             var changeFolderBtn = new Button
             {
@@ -552,7 +521,7 @@ public sealed class DashboardForm : Form
                 BackColor = CardBg,
                 FlatStyle = FlatStyle.Flat,
                 Size      = new Size(110, 24),
-                Location  = new Point(Math.Max(375, card.Width - 111), 8),
+                Location  = new Point(Math.Max(240, card.Width - 116), 8),
                 Anchor    = AnchorStyles.Top | AnchorStyles.Right,
                 Cursor    = Cursors.Hand,
             };
@@ -576,7 +545,6 @@ public sealed class DashboardForm : Form
             card.Controls.Add(pathLabel);
             card.Controls.Add(subfolderLabel);
             card.Controls.Add(selectFoldersBtn);
-            card.Controls.Add(changeDriveFolderBtn);
             card.Controls.Add(changeFolderBtn);
 
             _pairsContainer.Controls.Add(card);

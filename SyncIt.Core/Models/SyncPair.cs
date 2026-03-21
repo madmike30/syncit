@@ -9,11 +9,11 @@ public class SyncPair
     /// <summary>Absolute local folder path, e.g. C:\Users\Me\Documents\SyncedDocs</summary>
     public string LocalPath { get; set; } = string.Empty;
 
-    /// <summary>Google Drive folder ID (from the folder URL).</summary>
-    public string RemoteFolderId { get; set; } = string.Empty;
+    /// <summary>Google Drive folder ID. Default "root" = My Drive root.</summary>
+    public string RemoteFolderId { get; set; } = "root";
 
     /// <summary>Human-readable name for display purposes only.</summary>
-    public string RemoteFolderName { get; set; } = string.Empty;
+    public string RemoteFolderName { get; set; } = "My Drive";
 
     public bool Enabled { get; set; } = true;
 
