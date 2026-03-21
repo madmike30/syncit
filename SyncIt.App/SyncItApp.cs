@@ -60,7 +60,6 @@ public sealed class SyncItApp : ApplicationContext
     private bool _globalPaused;
     private SyncStatus? _lastStatus;
     private List<FileTransferProgress>? _activeTransfers;
-    private string? _pendingFreezeForPair;
     private readonly List<string> _recentActivity = new();
     private DateTime _lastTransferPush = DateTime.MinValue;
 
@@ -510,45 +509,33 @@ public sealed class SyncItApp : ApplicationContext
 
     private void OnDeletionFreezeTriggered(string pairId, IReadOnlyList<DeletionRecord> records)
     {
-        _pendingFreezeForPair = pairId;
+        // Show the warning dialog immediately on the UI thread — don't rely on
+        // balloon tips which are easy to miss.
         InvokeUI(() =>
         {
             _notifyIcon.Icon = _iconManager.WarningIcon;
-            ShowBalloon("SyncIt — Deletion Safety",
-                $"{records.Count} files would be deleted. Click to review.",
-                ToolTipIcon.Warning);
-            _notifyIcon.BalloonTipClicked += OnFreezeDialogRequested;
-        });
-    }
 
-    private void OnFreezeDialogRequested(object? sender, EventArgs e)
-    {
-        _notifyIcon.BalloonTipClicked -= OnFreezeDialogRequested;
-        if (_pendingFreezeForPair is null) return;
+            using var form = new DeletionWarningForm(pairId, _lastStatus);
+            var result = form.ShowDialog();
 
-        using var form = new DeletionWarningForm(_pendingFreezeForPair, _lastStatus);
-        var result = form.ShowDialog();
-
-        var pairId = _pendingFreezeForPair;
-        _pendingFreezeForPair = null;
-
-        // Direct call to coordinators (no IPC)
-        _ = Task.Run(async () =>
-        {
-            foreach (var coord in _deletionCoordinators)
+            // Direct call to coordinators (no IPC)
+            _ = Task.Run(async () =>
             {
-                try
+                foreach (var coord in _deletionCoordinators)
                 {
-                    if (result == DialogResult.Yes)
-                        await coord.ApproveFrozenAsync(pairId, _engineCts.Token);
-                    else
-                        await coord.CancelFrozenAsync(pairId, _engineCts.Token);
+                    try
+                    {
+                        if (result == DialogResult.Yes)
+                            await coord.ApproveFrozenAsync(pairId, _engineCts.Token);
+                        else
+                            await coord.CancelFrozenAsync(pairId, _engineCts.Token);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error handling frozen deletions for {PairId}", pairId);
+                    }
                 }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Error handling frozen deletions for {PairId}", pairId);
-                }
-            }
+            });
         });
     }
 

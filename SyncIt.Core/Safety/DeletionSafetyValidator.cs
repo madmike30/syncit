@@ -69,8 +69,10 @@ public sealed class DeletionSafetyValidator
         if (withBaseline.Count == 0)
             return ValidationResult.Proceed(new List<DeletionRecord>());
 
-        // Layer 2: threshold check — count ALL pending/frozen deletions already in the journal
-        var alreadyPending = await _journal.CountPendingAsync(pair.Id, ct);
+        // Layer 2: threshold check — count only active (Pending) deletions, NOT frozen ones.
+        // Frozen deletions are already blocked and awaiting user action — they shouldn't
+        // prevent new small-batch deletions from proceeding normally.
+        var alreadyPending = await _journal.CountActivePendingAsync(pair.Id, ct);
         var totalPending = alreadyPending + withBaseline.Count;
 
         if (totalPending > _config.MaxDeletionsPerCycle)

@@ -165,7 +165,13 @@ public sealed class DeletionCoordinator : IDeletionCoordinator
             }
             else
             {
-                _logger.LogWarning("Cannot trash Drive file for '{Path}': no DriveFileId in record.", del.RelativePath);
+                // No DriveFileId means we can't find the remote file to trash.
+                // This can happen if the file was never fully synced. Skip gracefully
+                // but log as error so it's visible.
+                _logger.LogError(
+                    "Cannot trash Drive file for '{Path}': no DriveFileId in deletion record. " +
+                    "The remote file may not have been synced. Marking as executed to clear the queue.",
+                    del.RelativePath);
             }
         }
         else

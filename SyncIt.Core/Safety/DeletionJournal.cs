@@ -173,7 +173,7 @@ public sealed class DeletionJournal : IDisposable
             yield return ReadRecord(reader);
     }
 
-    /// <summary>Count pending (not yet executed) deletions for a pair in this cycle.</summary>
+    /// <summary>Count pending + frozen (not yet executed) deletions for a pair.</summary>
     public async Task<int> CountPendingAsync(string syncPairId, CancellationToken ct = default)
     {
         await using var conn = await OpenAsync(ct);
@@ -185,6 +185,21 @@ public sealed class DeletionJournal : IDisposable
         cmd.Parameters.AddWithValue("@p",       syncPairId);
         cmd.Parameters.AddWithValue("@pending", (int)DeletionStatus.Pending);
         cmd.Parameters.AddWithValue("@frozen",  (int)DeletionStatus.Frozen);
+        var result = await cmd.ExecuteScalarAsync(ct);
+        return Convert.ToInt32(result);
+    }
+
+    /// <summary>Count only active Pending deletions (not Frozen) for threshold checks.</summary>
+    public async Task<int> CountActivePendingAsync(string syncPairId, CancellationToken ct = default)
+    {
+        await using var conn = await OpenAsync(ct);
+        await using var cmd  = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT COUNT(*) FROM deletion_records
+            WHERE sync_pair_id=@p AND status=@pending;
+            """;
+        cmd.Parameters.AddWithValue("@p",       syncPairId);
+        cmd.Parameters.AddWithValue("@pending", (int)DeletionStatus.Pending);
         var result = await cmd.ExecuteScalarAsync(ct);
         return Convert.ToInt32(result);
     }

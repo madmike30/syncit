@@ -111,6 +111,11 @@ public sealed class SyncEngine : ISyncEngine
             return;
         }
 
+        // Step 1b: Cancel stale frozen deletions from previous sessions.
+        // If the user never approved/cancelled them, they would permanently block
+        // new deletions from proceeding. Auto-cancel keeps the system clean.
+        await _deletionCoordinator.CancelFrozenAsync(pair.Id, ct);
+
         // Step 2: Initialize Drive page token (for remote change polling)
         await EnsurePageTokenAsync(pair, ct);
 
@@ -482,7 +487,15 @@ public sealed class SyncEngine : ISyncEngine
     {
         var absolutePath = PathHelper.ToAbsolute(pair.LocalPath, ev.RelativePath);
 
-        if (FileLockHelper.IsLocked(absolutePath) && ev.RetryCount < FileLockHelper.MaxRetries)
+        // If file was deleted while we were waiting, treat as a delete
+        if (!IOFile.Exists(absolutePath) && ev.Kind != ChangeKind.Deleted)
+        {
+            _logger.LogDebug("File vanished before processing: {Path} — treating as delete.", ev.RelativePath);
+            await HandleLocalDeleteAsync(ev with { Kind = ChangeKind.Deleted }, pair, ct);
+            return;
+        }
+
+        if (IOFile.Exists(absolutePath) && FileLockHelper.IsLocked(absolutePath) && ev.RetryCount < FileLockHelper.MaxRetries)
         {
             _logger.LogDebug("File locked: {Path} — requeueing (attempt {N})", ev.RelativePath, ev.RetryCount + 1);
             await Task.Delay(FileLockHelper.RetryDelay(ev.RetryCount), ct);
@@ -498,8 +511,10 @@ public sealed class SyncEngine : ISyncEngine
             var oldBaseline = await _stateStore.GetRecordAsync(pair.Id, SyncSide.Remote, ev.OldRelativePath);
             if (oldBaseline?.DriveFileId is not null)
                 await _driveService.TrashFileAsync(oldBaseline.DriveFileId, ct);
-            await UploadLocalFileAsync(absolutePath, ev.RelativePath, pair, ct); // manages semaphore internally
+            await UploadLocalFileAsync(absolutePath, ev.RelativePath, pair, ct); // updates both baselines
+            // Clean up old path baselines
             await _stateStore.RemoveRecordAsync(pair.Id, SyncSide.Remote, ev.OldRelativePath);
+            await _stateStore.RemoveRecordAsync(pair.Id, SyncSide.Local, ev.OldRelativePath);
         }
         else if (baseline?.DriveFileId is not null)
         {
@@ -933,8 +948,9 @@ public sealed class SyncEngine : ISyncEngine
                 break;
 
             case ConflictOutcome.NoConflict:
-                // Update baselines only
+                // Update both baselines so future change detection works correctly
                 await _stateStore.UpsertRecordAsync(BuildRemoteRecord(pair.Id, relativePath, remoteFile));
+                await _stateStore.UpsertRecordAsync(localRecord);
                 break;
         }
 
