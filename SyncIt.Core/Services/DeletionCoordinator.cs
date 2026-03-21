@@ -114,10 +114,22 @@ public sealed class DeletionCoordinator : IDeletionCoordinator
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex,
-                    "Failed to execute deletion of '{Path}'. Will retry next cycle.",
-                    record.RelativePath);
-                // Leave as Pending — retry next cycle
+                // grace_cycles goes more negative each cycle (-1, -2, -3...).
+                // After 3 failed attempts, give up and cancel the deletion.
+                if (del.GraceCyclesRemaining <= -3)
+                {
+                    _logger.LogError(ex,
+                        "Deletion of '{Path}' failed 3 times — cancelling permanently.",
+                        record.RelativePath);
+                    await _journal.UpdateStatusAsync(record.Id, DeletionStatus.Cancelled, ct: ct);
+                }
+                else
+                {
+                    _logger.LogWarning(ex,
+                        "Failed to execute deletion of '{Path}' (attempt {N}/3). Will retry next cycle.",
+                        record.RelativePath, Math.Abs(del.GraceCyclesRemaining));
+                    // Leave as Pending — DecrementAllPendingGraceCyclesAsync will tick it down further
+                }
             }
         }
     }
@@ -133,6 +145,19 @@ public sealed class DeletionCoordinator : IDeletionCoordinator
             // Unfreeze with 0 grace cycles so they execute on the next cycle
             await _journal.UpdateStatusAsync(del.Id, DeletionStatus.Pending, ct: ct);
             _logger.LogInformation("User approved frozen deletion: '{Path}'", del.RelativePath);
+        }
+    }
+
+    public async Task RenotifyFrozenAsync(string syncPairId, CancellationToken ct = default)
+    {
+        var frozen = new List<DeletionRecord>();
+        await foreach (var del in _journal.GetFrozenAsync(syncPairId, ct))
+            frozen.Add(del);
+
+        if (frozen.Count > 0)
+        {
+            _logger.LogWarning("Re-notifying about {Count} frozen deletions from previous session for pair {PairId}.", frozen.Count, syncPairId);
+            DeletionFreezeTriggered?.Invoke(syncPairId, frozen);
         }
     }
 

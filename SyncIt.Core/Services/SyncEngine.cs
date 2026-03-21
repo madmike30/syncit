@@ -111,10 +111,10 @@ public sealed class SyncEngine : ISyncEngine
             return;
         }
 
-        // Step 1b: Cancel stale frozen deletions from previous sessions.
-        // If the user never approved/cancelled them, they would permanently block
-        // new deletions from proceeding. Auto-cancel keeps the system clean.
-        await _deletionCoordinator.CancelFrozenAsync(pair.Id, ct);
+        // Step 1b: Re-notify about any frozen deletions from previous sessions.
+        // Don't auto-cancel — let the user decide. Re-trigger the freeze event
+        // so the UI can show the approval dialog again.
+        await _deletionCoordinator.RenotifyFrozenAsync(pair.Id, ct);
 
         // Step 2: Initialize Drive page token (for remote change polling)
         await EnsurePageTokenAsync(pair, ct);
@@ -193,7 +193,7 @@ public sealed class SyncEngine : ISyncEngine
         _fsw = new FileSystemWatcher(pair.LocalPath)
         {
             IncludeSubdirectories = true,
-            NotifyFilter          = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size,
+            NotifyFilter          = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Size,
             InternalBufferSize    = 65536,
             EnableRaisingEvents   = true,
         };
@@ -318,7 +318,9 @@ public sealed class SyncEngine : ISyncEngine
     {
         await foreach (var change in _changeQueue.ReadAllAsync(ct))
         {
-            if (_paused) continue;
+            // While paused, wait instead of dropping events
+            while (_paused && !ct.IsCancellationRequested)
+                await Task.Delay(500, ct);
 
             try
             {
@@ -507,11 +509,14 @@ public sealed class SyncEngine : ISyncEngine
 
         if (ev.Kind == ChangeKind.Renamed && ev.OldRelativePath is not null)
         {
-            // On Drive: update the file name / move — simplest is delete + re-upload
+            // Upload new path first (safe order: create before delete)
             var oldBaseline = await _stateStore.GetRecordAsync(pair.Id, SyncSide.Remote, ev.OldRelativePath);
+            await UploadLocalFileAsync(absolutePath, ev.RelativePath, pair, ct); // updates both baselines
+
+            // Only trash old Drive file after upload succeeds — prevents data loss on failure
             if (oldBaseline?.DriveFileId is not null)
                 await _driveService.TrashFileAsync(oldBaseline.DriveFileId, ct);
-            await UploadLocalFileAsync(absolutePath, ev.RelativePath, pair, ct); // updates both baselines
+
             // Clean up old path baselines
             await _stateStore.RemoveRecordAsync(pair.Id, SyncSide.Remote, ev.OldRelativePath);
             await _stateStore.RemoveRecordAsync(pair.Id, SyncSide.Local, ev.OldRelativePath);
@@ -648,6 +653,30 @@ public sealed class SyncEngine : ISyncEngine
             return;
         }
 
+        // Detect remote rename: if the DriveFileId exists in our baseline under a different
+        // path, this is a rename/move. Clean up the old local file and baselines.
+        if (remoteBaseline is null && file.Id is not null)
+        {
+            FileRecord? oldRemote = null;
+            await foreach (var rec in _stateStore.StreamRecordsAsync(pair.Id, SyncSide.Remote, ct))
+            {
+                if (rec.DriveFileId == file.Id) { oldRemote = rec; break; }
+            }
+
+            if (oldRemote is not null && !string.Equals(oldRemote.RelativePath, relativePath, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogInformation("Remote rename detected: '{Old}' → '{New}'", oldRemote.RelativePath, relativePath);
+                var oldLocalPath = PathHelper.ToAbsolute(pair.LocalPath, oldRemote.RelativePath);
+                if (IOFile.Exists(oldLocalPath))
+                {
+                    _atomicWriter.SuppressPath(oldLocalPath);
+                    IOFile.Delete(oldLocalPath);
+                }
+                await _stateStore.RemoveRecordAsync(pair.Id, SyncSide.Remote, oldRemote.RelativePath);
+                await _stateStore.RemoveRecordAsync(pair.Id, SyncSide.Local, oldRemote.RelativePath);
+            }
+        }
+
         // Check if local also changed since baseline → conflict
         if (localBaseline is not null && IOFile.Exists(localAbsPath))
         {
@@ -687,6 +716,27 @@ public sealed class SyncEngine : ISyncEngine
             if (rec.DriveFileId == driveFileId) { found = rec; break; }
         }
         if (found is null) return;
+
+        // Check if local file was modified since our baseline — if so, keep it (local wins)
+        var localAbsPath = PathHelper.ToAbsolute(pair.LocalPath, found.RelativePath);
+        var localBaseline = await _stateStore.GetRecordAsync(pair.Id, SyncSide.Local, found.RelativePath);
+        if (localBaseline is not null && IOFile.Exists(localAbsPath))
+        {
+            var detectResult = FastChangeDetector.CheckLocalFile(localAbsPath, localBaseline);
+            if (detectResult == ChangeResult.NeedsHash)
+            {
+                var localHash = await HashHelper.ComputeMd5Async(localAbsPath, ct);
+                if (localHash != localBaseline.ContentHash)
+                {
+                    // Local file was modified but remote deleted — keep local, re-upload
+                    _logger.LogWarning(
+                        "Remote deleted '{Path}' but local was modified — keeping local copy and re-uploading.",
+                        found.RelativePath);
+                    await UploadLocalFileAsync(localAbsPath, found.RelativePath, pair, ct);
+                    return;
+                }
+            }
+        }
 
         var deletion = new DeletionRecord
         {

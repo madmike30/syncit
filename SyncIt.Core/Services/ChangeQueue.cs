@@ -31,13 +31,24 @@ public sealed class ChangeQueue : IChangeQueue, IDisposable
     {
         var key = $"{ev.SyncPairId}:{ev.RelativePath}";
 
+        // For renames, also remove any pending event for the old path (it's stale)
+        if (ev.Kind == ChangeKind.Renamed && ev.OldRelativePath is not null)
+        {
+            var oldKey = $"{ev.SyncPairId}:{ev.OldRelativePath}";
+            if (_pending.TryRemove(oldKey, out var stale))
+                stale.Timer.Dispose();
+        }
+
         while (true)
         {
             if (_pending.TryGetValue(key, out var existing))
             {
-                // Reset the debounce timer and merge the events
-                existing.Timer.Change(DebounceDelay, Timeout.InfiniteTimeSpan);
-                existing.Event = Merge(existing.Event, ev);
+                // Reset the debounce timer and merge the events (under lock for thread safety)
+                lock (existing)
+                {
+                    existing.Timer.Change(DebounceDelay, Timeout.InfiniteTimeSpan);
+                    existing.Event = Merge(existing.Event, ev);
+                }
                 return;
             }
 
@@ -70,8 +81,13 @@ public sealed class ChangeQueue : IChangeQueue, IDisposable
     {
         if (_pending.TryRemove(key, out var entry))
         {
-            entry.Timer.Dispose();
-            if (_ready.Writer.TryWrite(entry.Event))
+            ChangeEvent ev;
+            lock (entry)
+            {
+                entry.Timer.Dispose();
+                ev = entry.Event;
+            }
+            if (_ready.Writer.TryWrite(ev))
                 Interlocked.Increment(ref _readyCount);
         }
     }

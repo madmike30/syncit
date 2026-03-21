@@ -34,4 +34,10 @@ public interface IDeletionCoordinator
     /// Marks them as Cancelled — they are never executed.
     /// </summary>
     Task CancelFrozenAsync(string syncPairId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Re-raise freeze notification for any frozen deletions from a previous session.
+    /// Called on startup so the user sees the approval dialog again.
+    /// </summary>
+    Task RenotifyFrozenAsync(string syncPairId, CancellationToken ct = default);
 }

@@ -109,8 +109,8 @@ public sealed class DeletionSafetyValidator
             return StartupCheckResult.Ok();
         }
 
-        // We have a baseline. Count actual local files (top-level only for speed)
-        var localFileCount = Directory.EnumerateFiles(pair.LocalPath, "*", SearchOption.TopDirectoryOnly).Take(1).Any() ? 1 : 0;
+        // We have a baseline. Check if there are any local files (including subdirectories)
+        var localFileCount = Directory.EnumerateFiles(pair.LocalPath, "*", SearchOption.AllDirectories).Take(1).Any() ? 1 : 0;
 
         if (localFileCount == 0)
         {

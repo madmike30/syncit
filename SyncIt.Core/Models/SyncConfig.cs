@@ -18,10 +18,11 @@ public class SyncConfig
     public int PollIntervalSeconds { get; set; } = 30;
 
     /// <summary>
-    /// If a single sync cycle would delete more than this many files, freeze and require user approval.
-    /// Default 10 — prevents catastrophic mass-delete from misconfiguration.
+    /// If the total pending deletions exceeds this threshold, freeze and require user approval.
+    /// Default 50 — prevents catastrophic mass-delete from misconfiguration while allowing
+    /// normal batch operations.
     /// </summary>
-    public int MaxDeletionsPerCycle { get; set; } = 10;
+    public int MaxDeletionsPerCycle { get; set; } = 50;
 
     /// <summary>
     /// Number of sync cycles a deletion must wait before executing (grace period).
