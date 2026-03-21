@@ -302,7 +302,11 @@ public sealed class DashboardForm : Form
         _ = LoadActivityAsync();
 
         _refreshTimer = new System.Windows.Forms.Timer { Interval = 3000 };
-        _refreshTimer.Tick += (_, _) => RefreshUI();
+        _refreshTimer.Tick += (_, _) =>
+        {
+            RefreshUI();
+            _ = LoadActivityAsync();
+        };
         _refreshTimer.Start();
     }
 

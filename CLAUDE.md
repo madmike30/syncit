@@ -92,7 +92,7 @@ Config lives at `%APPDATA%\SyncIt\syncit.json`. Key settings:
 ## Important Patterns
 
 ### SyncEngine lifecycle
-`StartAsync` → safety check → cancel stale frozen deletions → ensure page token → setup FSW → initial sync (if no baseline) → start consumer task + poll loop concurrently.
+`StartAsync` → safety check → cancel stale frozen deletions → ensure page token → **validate remote folder access** → setup FSW → initial sync (if no baseline) → start consumer task + poll loop concurrently. Initial sync uses `Parallel.ForEachAsync` with bounded concurrency (4) for uploads, downloads, and hash comparisons.
 
 ### File change flow (local → remote)
 FSW event → `OnLocalChange` → filter (glob, size, lock check) → `ChangeQueue.Enqueue` → 500ms debounce → `ConsumeChangesAsync` → `HandleLocalChangeAsync` (conflict check → upload) or `HandleLocalDeleteAsync` (→ DeletionCoordinator).
@@ -102,6 +102,12 @@ Poll timer → `RunSyncCycleAsync` → `ListChangesAsync` → `GetRelativePathAs
 
 ### Conflict resolution
 When both local and remote changed since baseline: `ConflictResolver` applies the configured strategy (default: `RemoteWins`). Options: `LocalWins`, `RemoteWins`, `KeepBoth` (renames local with `.conflict` suffix), `NoConflict`.
+
+### Account switching & state DB lifecycle
+`SwitchAccountAsync` in SyncItApp: stop engines → delete token → re-authorize (with account picker) → dispose old DriveService → **reset all state DBs** (state.db, delete-journal.db, activity.db) via `SqliteConnection.ClearAllPools()` + file deletion → validate new account's access to configured Drive folder → recreate ActivityLog + CloudSyncProvider → restart engines. State DBs are also reset when the Drive folder changes (config watcher detects `RemoteFolderId` change).
+
+### Path resolution safety
+`GetRelativePathAsync` walks parent chain from file to `rootFolderId` using `DriveFolderCache` for fast resolution. `RunSyncCycleAsync` rejects any path starting with `My Drive/` as a safety net against cache pollution from the Changes API (which returns changes across all of Drive, not just the sync folder).
 
 ## Live Smoke Tests
 
@@ -152,3 +158,7 @@ Run each test sequentially, waiting ~35s between tests for a full poll cycle. Ve
 - **Cloud Files overlay for folders**: Both `SetInSyncState` AND `CfSetPinState(PINNED)` must be called for items to show green checkmarks. `CfConvertToPlaceholder` with `CF_CONVERT_FLAG_MARK_IN_SYNC` alone is not sufficient — items still need to be pinned.
 - **FolderBrowserDialog hangs on UI thread**: The COM-based dialog can deadlock with the WinForms message pump. Run it on a dedicated STA thread with `thread.SetApartmentState(ApartmentState.STA)`.
 - **OAuth account picker**: `GoogleWebAuthorizationBroker.AuthorizeAsync` auto-selects the last Google account. To force the account picker, use a custom `GoogleAuthorizationCodeFlow` with `Prompt = "select_account"` on the `Initializer`. Note: `"consent"` forces re-consent but may auto-select the same account — use `"select_account"` to force the account chooser. The dedicated `Prompt` property on `GoogleAuthorizationCodeFlow.Initializer` is preferred over `UserDefinedQueryParams`.
+- **State DB reset on account/folder change**: Stale `state.db` records from a previous account or folder cause phantom deletion detections (files exist in baseline but not locally → treated as "deleted locally" → trashed from Drive). Always reset state DBs when switching accounts or changing the sync folder.
+- **SQLite connection pooling**: `Microsoft.Data.Sqlite` pools connections internally. Call `SqliteConnection.ClearAllPools()` before deleting `.db` files, otherwise you get "file in use" errors even after disposing all store objects.
+- **DriveFolderCache pollution**: The Changes API returns changes across ALL of Google Drive, not just the sync folder. Folder entries from changes outside the sync tree can pollute the cache, causing `GetRelativePathAsync` to resolve paths like `My Drive/folder/file.txt` instead of just `file.txt`. The `My Drive/` path rejection in `RunSyncCycleAsync` is a safety net for this.
+- **Config watcher stale captures**: Event handler lambdas in `ConfigReloaded` must use instance fields (`_driveService`, `_engineCts.Token`) rather than captured locals from the startup scope. After account switch, the original captured references are stale/cancelled.
