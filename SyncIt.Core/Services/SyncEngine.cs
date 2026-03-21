@@ -236,7 +236,7 @@ public sealed class SyncEngine : ISyncEngine
         if (relativePath is null) return;
 
         if (!_globFilter.IsIncluded(relativePath, pair)) return;
-        if (kind != ChangeKind.Deleted)
+        if (kind != ChangeKind.Deleted && !Directory.Exists(absolutePath))
         {
             try
             {

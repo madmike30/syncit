@@ -103,6 +103,43 @@ Poll timer → `RunSyncCycleAsync` → `ListChangesAsync` → `GetRelativePathAs
 ### Conflict resolution
 When both local and remote changed since baseline: `ConflictResolver` applies the configured strategy (default: `RemoteWins`). Options: `LocalWins`, `RemoteWins`, `KeepBoth` (renames local with `.conflict` suffix), `NoConflict`.
 
+## Live Smoke Tests
+
+When a live test is required (after significant changes to sync logic, FSW handling, deletion pipeline, or activity logging), run through all of these tests. Requires a running SyncIt instance with at least one configured sync pair.
+
+### Prerequisites
+```bash
+# Build, test, publish
+taskkill //IM SyncIt.exe //F 2>/dev/null
+dotnet build && dotnet test SyncIt.Tests/ && dotnet publish SyncIt.App/SyncIt.App.csproj -c Release -o publish --self-contained false
+
+# Launch and wait for engine start
+wscript SyncIt.vbs
+# Verify running: tasklist //FI "IMAGENAME eq SyncIt.exe"
+# Check logs: tail %APPDATA%\SyncIt\logs\syncit-<date>.log
+```
+
+### Test Matrix
+
+Run each test sequentially, waiting ~35s between tests for a full poll cycle. Verify each operation in the log file.
+
+| # | Operation | Command | Expected Log |
+|---|-----------|---------|--------------|
+| 1 | **Create file** | `echo "test" > <syncfolder>/test-file.txt` | `Uploaded: test-file.txt` + echo skip on next poll |
+| 2 | **Modify file** | `echo "modified" >> <syncfolder>/test-file.txt` | `Updated: test-file.txt` |
+| 3 | **Create folder** | `mkdir <syncfolder>/test-folder` | `Created Drive folder 'test-folder'` + `Folder created: test-folder` |
+| 4 | **Create nested file** | `echo "nested" > <syncfolder>/test-folder/nested.txt` | `Uploaded: test-folder/nested.txt` |
+| 5 | **Rename file** | `mv <syncfolder>/test-file.txt <syncfolder>/renamed.txt` | `Uploaded: renamed.txt` + `Trashed Drive file` (old) |
+| 6 | **Rename folder** | `mv <syncfolder>/test-folder <syncfolder>/folder-renamed` | `Folder renamed: 'test-folder' → 'folder-renamed'` |
+| 7 | **Delete file** | `rm <syncfolder>/renamed.txt` | `Deletion queued` → (wait 2 cycles) → `Executed deletion` + `Trashed Drive file` |
+| 8 | **Delete folder** | `rm -rf <syncfolder>/folder-renamed` | Delete events for folder contents |
+
+### Verification
+- **Logs**: `tail -100 %APPDATA%\SyncIt\logs\syncit-<date>.log` — check for errors, successful operations
+- **Activity DB**: Query `activity.db` for records matching all ActivityType values: Upload, Download, Renamed, FolderCreated, Deleted
+- **Echo detection**: After each upload, the next poll cycle should show `Skipping remote change ... revision unchanged (own upload echo)`
+- **Deletion safety**: File deletions must go through validation → journal → grace period (2 cycles) → execute. Files without baselines are rejected.
+
 ## Common Pitfalls
 
 - **SyncIt.exe must be killed before rebuilding** — the DLL gets locked. Use `taskkill //IM SyncIt.exe //F`.
