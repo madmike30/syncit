@@ -15,11 +15,26 @@ public sealed class FileStateStore : IFileStateStore
     private readonly string _connectionString;
     private readonly ILogger<FileStateStore> _logger;
 
+    // Kept alive so named in-memory databases persist across connections.
+    private readonly SqliteConnection? _keepAliveConnection;
+
     public FileStateStore(string dbPath, ILogger<FileStateStore> logger)
     {
         var expanded = PathHelper.Expand(dbPath);
         PathHelper.EnsureDirectory(Path.GetDirectoryName(expanded)!);
         _connectionString = $"Data Source={expanded};Cache=Shared;Mode=ReadWriteCreate";
+        _logger = logger;
+    }
+
+    /// <summary>
+    /// Creates an in-memory FileStateStore for testing.
+    /// Uses a named in-memory database so multiple connections share the same data.
+    /// The keepAlive connection prevents the database from being garbage-collected.
+    /// </summary>
+    internal FileStateStore(string name, SqliteConnection keepAlive, ILogger<FileStateStore> logger)
+    {
+        _keepAliveConnection = keepAlive;
+        _connectionString = $"Data Source={name};Mode=Memory;Cache=Shared";
         _logger = logger;
     }
 
@@ -259,10 +274,15 @@ public sealed class FileStateStore : IFileStateStore
     {
         var conn = new SqliteConnection(_connectionString);
         await conn.OpenAsync(ct);
-        // Enable WAL mode for better concurrent read/write performance
-        await using var pragma = conn.CreateCommand();
-        pragma.CommandText = "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;";
-        await pragma.ExecuteNonQueryAsync(ct);
+
+        if (_keepAliveConnection is null)
+        {
+            // Enable WAL mode for file-based databases
+            await using var pragma = conn.CreateCommand();
+            pragma.CommandText = "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;";
+            await pragma.ExecuteNonQueryAsync(ct);
+        }
+
         return conn;
     }
 
@@ -303,5 +323,8 @@ public sealed class FileStateStore : IFileStateStore
         cmd.Parameters.AddWithValue("@rec",     r.RecordedUtc.ToString("O"));
     }
 
-    public void Dispose() { /* Connections are disposed per-operation */ }
+    public void Dispose()
+    {
+        _keepAliveConnection?.Dispose();
+    }
 }

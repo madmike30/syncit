@@ -35,6 +35,9 @@ public sealed class SyncEngine : ISyncEngine
     private readonly DeletionSafetyValidator _safetyValidator;
     private readonly AtomicFileWriter _atomicWriter;
     private readonly IOverlayStateStore? _overlayStore;
+    private readonly IActivityLog? _activityLog;
+    private readonly FailedOperationTracker? _retryTracker;
+    private readonly SyncMetrics _metrics = new();
     private readonly ILogger<SyncEngine> _logger;
 
     private FileSystemWatcher? _fsw;
@@ -52,6 +55,9 @@ public sealed class SyncEngine : ISyncEngine
     /// <summary>Per-file transfer progress tracker — subscribe for IPC push.</summary>
     public TransferTracker TransferTracker { get; } = new();
 
+    /// <summary>Accumulated sync metrics for this engine.</summary>
+    public SyncMetrics Metrics => _metrics;
+
     public event Action<SyncPairStatus>? StatusChanged;
 
     public SyncEngine(
@@ -66,7 +72,9 @@ public sealed class SyncEngine : ISyncEngine
         DeletionSafetyValidator safetyValidator,
         AtomicFileWriter atomicWriter,
         ILogger<SyncEngine> logger,
-        IOverlayStateStore? overlayStore = null)
+        IOverlayStateStore? overlayStore = null,
+        IActivityLog? activityLog = null,
+        FailedOperationTracker? retryTracker = null)
     {
         _pair                = pair;
         _config              = config;
@@ -79,6 +87,8 @@ public sealed class SyncEngine : ISyncEngine
         _safetyValidator     = safetyValidator;
         _atomicWriter        = atomicWriter;
         _overlayStore        = overlayStore;
+        _activityLog         = activityLog;
+        _retryTracker        = retryTracker;
         _logger              = logger;
     }
 
@@ -162,6 +172,8 @@ public sealed class SyncEngine : ISyncEngine
         RemoteFolderName = _pair.RemoteFolderName,
         State            = _state,
         PendingChanges   = _changeQueue.ReadyCount + _changeQueue.PendingCount,
+        FailedOperations = _retryTracker?.FailedCount ?? 0,
+        ExhaustedRetries = _retryTracker?.ExhaustedCount ?? 0,
         LastError        = _lastError,
     };
 
@@ -254,6 +266,7 @@ public sealed class SyncEngine : ISyncEngine
 
     private async Task PollRemoteLoopAsync(SyncPair pair, CancellationToken ct)
     {
+        int consecutiveErrors = 0;
         while (!ct.IsCancellationRequested)
         {
             try
@@ -263,14 +276,31 @@ public sealed class SyncEngine : ISyncEngine
                 if (_paused) continue;
 
                 await RunSyncCycleAsync(pair, ct);
+                consecutiveErrors = 0;
+
+                // After a successful sync cycle, re-enqueue any retryable failed operations
+                if (_retryTracker is not null)
+                {
+                    var retryable = _retryTracker.GetRetryableEvents();
+                    foreach (var ev in retryable)
+                    {
+                        _logger.LogDebug("Retrying failed operation: {Kind} '{Path}'", ev.Kind, ev.RelativePath);
+                        _changeQueue.Enqueue(ev);
+                    }
+                }
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
+                consecutiveErrors++;
                 _logger.LogError(ex, "Error in poll loop for pair {Id}", pair.Id);
                 _lastError = ex.Message;
                 SetState(SyncState.Error);
-                await Task.Delay(TimeSpan.FromSeconds(30), ct); // back off before retry
+
+                // Exponential backoff: base * 2^(errors-1), capped at maxDelay
+                var backoffSec = _config.RetryBaseDelaySeconds * Math.Pow(2, consecutiveErrors - 1);
+                backoffSec = Math.Min(backoffSec, _config.RetryMaxDelaySeconds);
+                await Task.Delay(TimeSpan.FromSeconds(backoffSec), ct);
             }
         }
     }
@@ -297,12 +327,22 @@ public sealed class SyncEngine : ISyncEngine
                 {
                     await HandleLocalChangeAsync(change, pair, ct);
                 }
+
+                // Clear from retry tracker on success
+                _retryTracker?.MarkSuccess(change);
             }
             catch (Exception ex)
             {
                 _errors++;
+                _metrics.RecordError();
                 _lastError = ex.Message;
+                LogActivity(ActivityType.Error, change.RelativePath, details: ex.Message);
                 _logger.LogError(ex, "Error processing change {Kind} '{Path}'", change.Kind, change.RelativePath);
+
+                // Record failure for retry (if tracker available and not exhausted)
+                if (_retryTracker is not null && !_retryTracker.IsExhausted(change))
+                    _retryTracker.RecordFailure(change, ex.Message);
+
                 SetState(SyncState.Error);
             }
             finally
@@ -319,6 +359,7 @@ public sealed class SyncEngine : ISyncEngine
     private async Task RunSyncCycleAsync(SyncPair pair, CancellationToken ct)
     {
         SetState(SyncState.Syncing, "Checking for remote changes...");
+        _metrics.StartCycle();
 
         try
         {
@@ -349,12 +390,16 @@ public sealed class SyncEngine : ISyncEngine
             await _deletionCoordinator.ExecuteApprovedAsync(pair, ct);
 
             await _stateStore.SetLastSyncTimeAsync(pair.Id, DateTime.UtcNow);
+            _metrics.EndCycle();
             SetState(SyncState.Idle);
         }
         catch (Exception ex)
         {
+            _metrics.EndCycle();
             _errors++;
+            _metrics.RecordError();
             _lastError = ex.Message;
+            LogActivity(ActivityType.Error, "", details: $"Sync cycle failed: {ex.Message}");
             _logger.LogError(ex, "Sync cycle failed for pair {Id}", pair.Id);
             SetState(SyncState.Error);
         }
@@ -507,6 +552,8 @@ public sealed class SyncEngine : ISyncEngine
                 TransferTracker.Complete(pair.Id, ev.RelativePath);
                 await SetOverlayAsync(ev.RelativePath, OverlaySyncState.Synced, ct);
                 _filesUploaded++;
+                _metrics.RecordUpload(updatedLocalMeta.Length);
+                LogActivity(ActivityType.Upload, ev.RelativePath, updatedLocalMeta.Length);
                 _logger.LogInformation("Updated: {Path}", ev.RelativePath);
             }
             catch (Exception ex)
@@ -689,6 +736,8 @@ public sealed class SyncEngine : ISyncEngine
             TransferTracker.Complete(pair.Id, relativePath);
             await SetOverlayAsync(relativePath, OverlaySyncState.Synced, ct);
             _filesUploaded++;
+            _metrics.RecordUpload(localMeta.Length);
+            LogActivity(ActivityType.Upload, relativePath, localMeta.Length);
             _logger.LogInformation("Uploaded: {Path}", relativePath);
         }
         catch (Exception ex)
@@ -794,6 +843,8 @@ public sealed class SyncEngine : ISyncEngine
             TransferTracker.Complete(pair.Id, relativePath);
             await SetOverlayAsync(relativePath, OverlaySyncState.Synced, ct);
             _filesDownloaded++;
+            _metrics.RecordDownload(file.Size ?? 0);
+            LogActivity(ActivityType.Download, relativePath, file.Size ?? 0);
             _logger.LogInformation("Downloaded: {Path}", relativePath);
         }
         catch (Exception ex)
@@ -888,11 +939,24 @@ public sealed class SyncEngine : ISyncEngine
         }
 
         _conflictsResolved++;
+        LogActivity(ActivityType.ConflictResolved, relativePath, details: action.ReasonDescription);
     }
 
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
+
+    private void LogActivity(ActivityType type, string relativePath, long sizeBytes = 0, string? details = null)
+    {
+        _ = _activityLog?.RecordAsync(new ActivityRecord
+        {
+            SyncPairId = _pair.Id,
+            Type = type,
+            RelativePath = relativePath,
+            SizeBytes = sizeBytes,
+            Details = details,
+        });
+    }
 
     private async Task EnsurePageTokenAsync(SyncPair pair, CancellationToken ct)
     {

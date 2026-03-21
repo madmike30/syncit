@@ -32,6 +32,7 @@ public sealed class SyncWorker : BackgroundService
     private IGoogleDriveService? _driveService;
     private IOverlayStateStore? _overlayStore;
     private DateTime _lastTransferPush = DateTime.MinValue;
+    private IActivityLog? _activityLog;
 
     // Cached account info — refreshed every 5 minutes
     private DriveAccountInfo? _accountInfo;
@@ -66,10 +67,15 @@ public sealed class SyncWorker : BackgroundService
             var credential   = await oauthService.InitializeAsync(stoppingToken);
 
             // Create shared services
-            var driveService = new GoogleDriveService(credential, CreateLogger<GoogleDriveService>());
+            var driveService = new GoogleDriveService(credential, CreateLogger<GoogleDriveService>(), _config);
             _driveService = driveService;
             var globFilter   = new GlobFilter();
             var atomicWriter = new AtomicFileWriter(CreateLogger<AtomicFileWriter>());
+
+            // Initialize activity log
+            _activityLog = new ActivityLog(_config.ActivityLogPath, CreateLogger<ActivityLog>());
+            await _activityLog.InitializeAsync(stoppingToken);
+            await _activityLog.PruneAsync(_config.ActivityLogRetentionDays, stoppingToken);
 
             // Initialize cloud sync provider for Explorer Status column icons
             var firstPair = _config.SyncPairs.FirstOrDefault(p => p.Enabled);
@@ -160,11 +166,12 @@ public sealed class SyncWorker : BackgroundService
 
             var changeQueue   = new ChangeQueue();
             var conflictRes   = new ConflictResolver(CreateLogger<ConflictResolver>());
+            var retryTracker  = new FailedOperationTracker(_config, CreateLogger<FailedOperationTracker>());
 
             var engine = new SyncEngine(
                 pair, _config, driveService, stateStore, conflictRes,
                 deletionCoord, globFilter, changeQueue, safetyValidator,
-                atomicWriter, CreateLogger<SyncEngine>(), _overlayStore);
+                atomicWriter, CreateLogger<SyncEngine>(), _overlayStore, _activityLog, retryTracker);
 
             engine.StatusChanged += OnEngineStatusChanged;
             engine.TransferTracker.ProgressChanged += _ => ThrottledTransferPush();
@@ -250,6 +257,11 @@ public sealed class SyncWorker : BackgroundService
                     _ = Task.Run(() => HandleGetSubfoldersAsync(subPayload, _stoppingToken));
                 break;
 
+            case IpcMessageType.RequestActivityHistory:
+                var histReq = IpcSerializer.DeserializePayload<ActivityHistoryRequest>(msg.Payload);
+                _ = Task.Run(() => HandleActivityHistoryAsync(histReq ?? new ActivityHistoryRequest(), _stoppingToken));
+                break;
+
             // BUG-009 fix: use graceful shutdown instead of Environment.Exit(0)
             case IpcMessageType.Shutdown:
                 _logger.LogInformation("Tray requested service shutdown.");
@@ -300,6 +312,31 @@ public sealed class SyncWorker : BackgroundService
 
         if (_ipcServer is not null)
             await _ipcServer.SendAsync(IpcSerializer.Build(IpcMessageType.SubfoldersResult, result));
+    }
+
+    private async Task HandleActivityHistoryAsync(ActivityHistoryRequest request, CancellationToken ct)
+    {
+        ActivityHistoryPayload result;
+        try
+        {
+            if (_activityLog is null)
+            {
+                result = new ActivityHistoryPayload();
+            }
+            else
+            {
+                var records = await _activityLog.GetRecentAsync(request.Limit, request.SyncPairId, ct);
+                result = new ActivityHistoryPayload { Records = records };
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to retrieve activity history.");
+            result = new ActivityHistoryPayload();
+        }
+
+        if (_ipcServer is not null)
+            await _ipcServer.SendAsync(IpcSerializer.Build(IpcMessageType.ActivityHistoryResult, result));
     }
 
     private void OnEngineStatusChanged(SyncPairStatus status) =>
@@ -381,6 +418,21 @@ public sealed class SyncWorker : BackgroundService
             status.AccountEmail     = _accountInfo.Email;
             status.StorageUsedBytes = _accountInfo.StorageUsedBytes;
             status.StorageTotalBytes = _accountInfo.StorageTotalBytes;
+        }
+
+        // Aggregate metrics from all engines
+        if (_engines.Count > 0)
+        {
+            var aggregate = new SyncMetricsSnapshot
+            {
+                TotalBytesUploaded   = _engines.Sum(e => e.Metrics.TotalBytesUploaded),
+                TotalBytesDownloaded = _engines.Sum(e => e.Metrics.TotalBytesDownloaded),
+                TotalApiCalls        = _engines.Sum(e => e.Metrics.TotalApiCalls),
+                TotalSyncCycles      = _engines.Sum(e => e.Metrics.TotalSyncCycles),
+                TotalErrors          = _engines.Sum(e => e.Metrics.TotalErrors),
+                LastCycleDurationMs  = _engines.Max(e => e.Metrics.LastCycleDurationMs),
+            };
+            status.Metrics = aggregate;
         }
 
         return status;

@@ -1,5 +1,6 @@
 using System.Runtime.Versioning;
 using SyncIt.Core.Models;
+using SyncIt.Core.Services;
 
 namespace SyncIt.Tray.Forms;
 
@@ -157,6 +158,26 @@ public sealed class StatusForm : Form
                 pairBox.Controls.Add(pairLabel);
                 panel.Controls.Add(pairBox);
             }
+        }
+
+        // Metrics
+        if (_status.Metrics is not null)
+        {
+            panel.Controls.Add(new Label
+            {
+                Text     = "Metrics:",
+                Font     = new Font(Font, FontStyle.Bold),
+                AutoSize = true,
+                Padding  = new Padding(0, 4, 0, 2),
+            });
+
+            var m = _status.Metrics;
+            panel.Controls.Add(new Label
+            {
+                Text = $"↑ {FormatBytes(m.TotalBytesUploaded)} uploaded   ↓ {FormatBytes(m.TotalBytesDownloaded)} downloaded\n"
+                     + $"Sync cycles: {m.TotalSyncCycles}   Errors: {m.TotalErrors}   Last cycle: {m.LastCycleDurationMs}ms",
+                AutoSize = true,
+            });
         }
 
         if (_status.LastError is not null)

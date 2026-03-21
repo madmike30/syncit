@@ -16,12 +16,24 @@ public sealed class DeletionJournal : IDisposable
 {
     private readonly string _connectionString;
     private readonly ILogger<DeletionJournal> _logger;
+    private readonly SqliteConnection? _keepAliveConnection;
 
     public DeletionJournal(string dbPath, ILogger<DeletionJournal> logger)
     {
         var expanded = PathHelper.Expand(dbPath);
         PathHelper.EnsureDirectory(Path.GetDirectoryName(expanded)!);
         _connectionString = $"Data Source={expanded};Cache=Shared;Mode=ReadWriteCreate";
+        _logger = logger;
+    }
+
+    /// <summary>
+    /// Creates an in-memory DeletionJournal for testing.
+    /// Uses a named in-memory database so multiple connections share the same data.
+    /// </summary>
+    internal DeletionJournal(string name, SqliteConnection keepAlive, ILogger<DeletionJournal> logger)
+    {
+        _keepAliveConnection = keepAlive;
+        _connectionString = $"Data Source={name};Mode=Memory;Cache=Shared";
         _logger = logger;
     }
 
@@ -203,9 +215,14 @@ public sealed class DeletionJournal : IDisposable
     {
         var conn = new SqliteConnection(_connectionString);
         await conn.OpenAsync(ct);
-        await using var pragma = conn.CreateCommand();
-        pragma.CommandText = "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;";
-        await pragma.ExecuteNonQueryAsync(ct);
+
+        if (_keepAliveConnection is null)
+        {
+            await using var pragma = conn.CreateCommand();
+            pragma.CommandText = "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;";
+            await pragma.ExecuteNonQueryAsync(ct);
+        }
+
         return conn;
     }
 
@@ -243,5 +260,8 @@ public sealed class DeletionJournal : IDisposable
         GraceCyclesRemaining = r.GetInt32(r.GetOrdinal("grace_cycles")),
     };
 
-    public void Dispose() { }
+    public void Dispose()
+    {
+        _keepAliveConnection?.Dispose();
+    }
 }

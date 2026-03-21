@@ -23,6 +23,9 @@ public enum IpcMessageType
     GetSubfolders,             // Payload: GetSubfoldersPayload — requests subfolder list for a pair
     Shutdown,                  // No payload — graceful stop
 
+    RequestActivityHistory,    // Payload: ActivityHistoryRequest — tray requests history
+    ActivityHistoryResult,     // Payload: ActivityHistoryPayload — service sends history
+
     // Bidirectional responses
     Ack,                       // Payload: AckPayload
     Nack,                      // Payload: NackPayload
@@ -107,5 +110,16 @@ public class SubfolderEntry
 public class FileTransferUpdatePayload
 {
     public List<FileTransferProgress> ActiveTransfers { get; set; } = new();
+}
+
+public class ActivityHistoryRequest
+{
+    public int Limit { get; set; } = 100;
+    public string? SyncPairId { get; set; }
+}
+
+public class ActivityHistoryPayload
+{
+    public List<ActivityRecord> Records { get; set; } = new();
 }
 

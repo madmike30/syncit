@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Polly;
 using Polly.Retry;
+using SyncIt.Core.Models;
 
 namespace SyncIt.Core.Helpers;
 
@@ -12,10 +13,15 @@ public static class RetryHelper
 {
     /// <summary>
     /// Standard retry policy for Drive API operations.
-    /// 5 retries with exponential backoff + jitter: ~1s, 2s, 4s, 8s, 16s.
+    /// Defaults: 5 retries with exponential backoff + jitter: ~1s, 2s, 4s, 8s, 16s.
     /// </summary>
-    public static AsyncRetryPolicy CreateDrivePolicy(ILogger logger) =>
-        Policy
+    public static AsyncRetryPolicy CreateDrivePolicy(ILogger logger, RetryPolicyConfig? config = null)
+    {
+        var retryCount = config?.RetryCount ?? 5;
+        var baseDelayMs = config?.BaseDelayMs ?? 1000;
+        var maxDelayMs = config?.MaxDelayMs ?? 30000;
+
+        return Policy
             .Handle<Google.GoogleApiException>(ex =>
                 ex.HttpStatusCode is
                     System.Net.HttpStatusCode.TooManyRequests or
@@ -24,28 +30,36 @@ public static class RetryHelper
             .Or<HttpRequestException>()
             .Or<TaskCanceledException>(ex => ex.CancellationToken == default)
             .WaitAndRetryAsync(
-                retryCount: 5,
+                retryCount: retryCount,
                 sleepDurationProvider: (attempt, _) =>
                 {
-                    var baseDelay = TimeSpan.FromSeconds(Math.Pow(2, attempt - 1));
-                    var jitter    = TimeSpan.FromMilliseconds(Random.Shared.Next(0, 500));
-                    return baseDelay + jitter;
+                    var delay = TimeSpan.FromMilliseconds(baseDelayMs * Math.Pow(2, attempt - 1));
+                    var maxDelay = TimeSpan.FromMilliseconds(maxDelayMs);
+                    if (delay > maxDelay) delay = maxDelay;
+                    var jitter = TimeSpan.FromMilliseconds(Random.Shared.Next(0, 500));
+                    return delay + jitter;
                 },
                 onRetry: (ex, delay, attempt, _) =>
                     logger.LogWarning(
-                        "Drive API retry {Attempt}/5 after {Delay:0.0}s: {Message}",
-                        attempt, delay.TotalSeconds, ex.Message));
+                        "Drive API retry {Attempt}/{Max} after {Delay:0.0}s: {Message}",
+                        attempt, retryCount, delay.TotalSeconds, ex.Message));
+    }
 
     /// <summary>
     /// Short retry policy for quick operations that should not block long.
-    /// 3 retries with 500ms fixed delay.
+    /// Defaults: 3 retries with 500ms fixed delay.
     /// </summary>
-    public static AsyncRetryPolicy CreateQuickPolicy(ILogger logger) =>
-        Policy
+    public static AsyncRetryPolicy CreateQuickPolicy(ILogger logger, RetryPolicyConfig? config = null)
+    {
+        var retryCount = config?.RetryCount ?? 3;
+        var baseDelayMs = config?.BaseDelayMs ?? 500;
+
+        return Policy
             .Handle<Exception>()
             .WaitAndRetryAsync(
-                retryCount: 3,
-                sleepDurationProvider: _ => TimeSpan.FromMilliseconds(500),
+                retryCount: retryCount,
+                sleepDurationProvider: _ => TimeSpan.FromMilliseconds(baseDelayMs),
                 onRetry: (ex, _, attempt, _) =>
-                    logger.LogDebug("Quick retry {Attempt}/3: {Message}", attempt, ex.Message));
+                    logger.LogDebug("Quick retry {Attempt}/{Max}: {Message}", attempt, retryCount, ex.Message));
+    }
 }

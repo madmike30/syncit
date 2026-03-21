@@ -37,6 +37,9 @@ public class SyncStatus
     public long StorageTotalBytes  { get; set; }
 
     public List<SyncPairStatus> PairStatuses { get; set; } = new();
+
+    /// <summary>Aggregate metrics across all engines (nullable if not yet populated).</summary>
+    public Services.SyncMetricsSnapshot? Metrics { get; set; }
 }
 
 public class SyncPairStatus
@@ -47,5 +50,7 @@ public class SyncPairStatus
     public SyncState State            { get; set; }
     public int      PendingChanges    { get; set; }
     public int      PendingDeletions  { get; set; }
+    public int      FailedOperations  { get; set; }
+    public int      ExhaustedRetries  { get; set; }
     public string?  LastError         { get; set; }
 }

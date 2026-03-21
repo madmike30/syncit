@@ -6,6 +6,7 @@ using Google.Apis.Upload;
 using Microsoft.Extensions.Logging;
 using Polly;
 using SyncIt.Core.Helpers;
+using SyncIt.Core.IO;
 using SyncIt.Core.Models;
 using DriveFile = Google.Apis.Drive.v3.Data.File;
 
@@ -20,21 +21,39 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
     private readonly DriveService _drive;
     private readonly ILogger<GoogleDriveService> _logger;
     private readonly AsyncPolicy _retryPolicy;
+    private readonly AsyncPolicy _uploadRetryPolicy;
+    private readonly AsyncPolicy _downloadRetryPolicy;
+    private readonly SyncConfig? _config;
+    private readonly DriveFolderCache _folderCache = new();
 
     // Fields requested on every file list/get (keep minimal to reduce response size)
     private const string FileFields = "id,name,mimeType,md5Checksum,size,modifiedTime,parents,trashed,headRevisionId";
     private const string ListFields = $"nextPageToken,files({FileFields})";
 
     public GoogleDriveService(UserCredential credential, ILogger<GoogleDriveService> logger)
+        : this(credential, logger, null)
+    {
+    }
+
+    public GoogleDriveService(UserCredential credential, ILogger<GoogleDriveService> logger, SyncConfig? config)
     {
         _logger = logger;
+        _config = config;
         _drive  = new DriveService(new BaseClientService.Initializer
         {
             HttpClientInitializer = credential,
             ApplicationName       = "SyncIt",
         });
-        _retryPolicy = RetryHelper.CreateDrivePolicy(logger);
+        _retryPolicy         = RetryHelper.CreateDrivePolicy(logger, config?.MetadataRetryPolicy);
+        _uploadRetryPolicy   = RetryHelper.CreateDrivePolicy(logger, config?.UploadRetryPolicy);
+        _downloadRetryPolicy = RetryHelper.CreateDrivePolicy(logger, config?.DownloadRetryPolicy);
     }
+
+    private long UploadBytesPerSecond => (_config?.MaxUploadKBps ?? 0) * 1024L;
+    private long DownloadBytesPerSecond => (_config?.MaxDownloadKBps ?? 0) * 1024L;
+
+    /// <summary>Folder cache for resolving relative paths without extra API calls.</summary>
+    public DriveFolderCache FolderCache => _folderCache;
 
     // -------------------------------------------------------------------------
     // File listing
@@ -64,8 +83,11 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
             {
                 if (file.Trashed == true) continue;
 
+                // Cache folder entries for fast path resolution
                 if (file.MimeType == "application/vnd.google-apps.folder")
                 {
+                    _folderCache.Set(file.Id, file.Name, file.Parents?.FirstOrDefault());
+
                     // Recurse into subfolder
                     await foreach (var child in ListFilesAsync(file.Id, ct))
                         yield return child;
@@ -94,9 +116,14 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
         if (progress is not null)
             request.MediaDownloader.ProgressChanged += p => progress.Report(p.BytesDownloaded);
 
-        await _retryPolicy.ExecuteAsync(async () =>
+        // Wrap destination with throttle if configured
+        var target = DownloadBytesPerSecond > 0
+            ? new ThrottledStream(destination, DownloadBytesPerSecond)
+            : destination;
+
+        await _downloadRetryPolicy.ExecuteAsync(async () =>
         {
-            var dlProgress = await request.DownloadAsync(destination, ct);
+            var dlProgress = await request.DownloadAsync(target, ct);
             if (dlProgress.Status != Google.Apis.Download.DownloadStatus.Completed)
                 throw new IOException($"Download did not complete: {dlProgress.Status} — {dlProgress.Exception?.Message}");
         });
@@ -106,7 +133,7 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
     {
         var request = _drive.Files.Export(fileId, exportMimeType);
 
-        await _retryPolicy.ExecuteAsync(async () =>
+        await _downloadRetryPolicy.ExecuteAsync(async () =>
         {
             var progress = await request.DownloadAsync(destination, ct);
             if (progress.Status != Google.Apis.Download.DownloadStatus.Completed)
@@ -135,20 +162,25 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
             Parents = new[] { parentFolderId },
         };
 
-        return await _retryPolicy.ExecuteAsync(async () =>
+        return await _uploadRetryPolicy.ExecuteAsync(async () =>
         {
-            await using var stream = new FileStream(localPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 81920, useAsync: true);
-            var request = _drive.Files.Create(fileMetadata, stream, mimeType);
-            request.Fields = FileFields;
+            Stream stream = new FileStream(localPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 81920, useAsync: true);
+            if (UploadBytesPerSecond > 0)
+                stream = new ThrottledStream(stream, UploadBytesPerSecond);
+            await using (stream)
+            {
+                var request = _drive.Files.Create(fileMetadata, stream, mimeType);
+                request.Fields = FileFields;
 
-            if (progress is not null)
-                request.ProgressChanged += p => progress.Report(p.BytesSent);
+                if (progress is not null)
+                    request.ProgressChanged += p => progress.Report(p.BytesSent);
 
-            var uploadProgress = await request.UploadAsync(ct);
-            if (uploadProgress.Status != UploadStatus.Completed)
-                throw new IOException($"Upload failed: {uploadProgress.Status} — {uploadProgress.Exception?.Message}");
+                var uploadProgress = await request.UploadAsync(ct);
+                if (uploadProgress.Status != UploadStatus.Completed)
+                    throw new IOException($"Upload failed: {uploadProgress.Status} — {uploadProgress.Exception?.Message}");
 
-            return request.ResponseBody;
+                return request.ResponseBody;
+            }
         });
     }
 
@@ -162,20 +194,25 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
         IProgress<long>? progress,
         CancellationToken ct = default)
     {
-        return await _retryPolicy.ExecuteAsync(async () =>
+        return await _uploadRetryPolicy.ExecuteAsync(async () =>
         {
-            await using var stream = new FileStream(localPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 81920, useAsync: true);
-            var request = _drive.Files.Update(new DriveFile(), fileId, stream, mimeType);
-            request.Fields = FileFields;
+            Stream stream = new FileStream(localPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 81920, useAsync: true);
+            if (UploadBytesPerSecond > 0)
+                stream = new ThrottledStream(stream, UploadBytesPerSecond);
+            await using (stream)
+            {
+                var request = _drive.Files.Update(new DriveFile(), fileId, stream, mimeType);
+                request.Fields = FileFields;
 
-            if (progress is not null)
-                request.ProgressChanged += p => progress.Report(p.BytesSent);
+                if (progress is not null)
+                    request.ProgressChanged += p => progress.Report(p.BytesSent);
 
-            var uploadProgress = await request.UploadAsync(ct);
-            if (uploadProgress.Status != UploadStatus.Completed)
-                throw new IOException($"Update upload failed: {uploadProgress.Status} — {uploadProgress.Exception?.Message}");
+                var uploadProgress = await request.UploadAsync(ct);
+                if (uploadProgress.Status != UploadStatus.Completed)
+                    throw new IOException($"Update upload failed: {uploadProgress.Status} — {uploadProgress.Exception?.Message}");
 
-            return request.ResponseBody;
+                return request.ResponseBody;
+            }
         });
     }
 
@@ -223,7 +260,21 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
             var result = await _retryPolicy.ExecuteAsync(() => request.ExecuteAsync(ct));
 
             if (result.Changes is not null)
+            {
                 allChanges.AddRange(result.Changes);
+
+                // Update folder cache from changes
+                foreach (var change in result.Changes)
+                {
+                    if (change.File is not null && change.File.MimeType == "application/vnd.google-apps.folder")
+                    {
+                        if (change.Removed == true || change.File.Trashed == true)
+                            _folderCache.Remove(change.FileId);
+                        else
+                            _folderCache.Set(change.FileId, change.File.Name, change.File.Parents?.FirstOrDefault());
+                    }
+                }
+            }
 
             if (result.NewStartPageToken is not null)
             {
@@ -260,24 +311,33 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
 
     public async Task<string?> GetRelativePathAsync(string fileId, string rootFolderId, CancellationToken ct = default)
     {
+        // Try cache-only resolution first (no API calls)
+        var file = await GetFileAsync(fileId, ct);
+        if (file is null) return null;
+
+        var cachedPath = _folderCache.TryGetRelativePath(
+            fileId, file.Name, rootFolderId, file.Parents?.FirstOrDefault());
+        if (cachedPath is not null)
+            return cachedPath;
+
+        // Cache miss — walk up the tree via API (and populate cache along the way)
         var segments = new Stack<string>();
-        var currentId = fileId;
+        segments.Push(file.Name);
 
-        for (int depth = 0; depth < 50; depth++) // guard against infinite loops
+        var parentId = file.Parents?.FirstOrDefault();
+        for (int depth = 0; depth < 50 && parentId is not null && parentId != rootFolderId; depth++)
         {
-            var file = await GetFileAsync(currentId, ct);
-            if (file is null) return null;
-
-            segments.Push(file.Name);
-
-            var parentId = file.Parents?.FirstOrDefault();
-            if (parentId is null || parentId == rootFolderId)
-                break;
-
             if (parentId == "root" || depth > 40)
                 return null; // went past the root folder — not in our tree
 
-            currentId = parentId;
+            var parent = await GetFileAsync(parentId, ct);
+            if (parent is null) return null;
+
+            // Cache the folder for future lookups
+            _folderCache.Set(parentId, parent.Name, parent.Parents?.FirstOrDefault());
+            segments.Push(parent.Name);
+
+            parentId = parent.Parents?.FirstOrDefault();
         }
 
         return string.Join("/", segments);

@@ -55,6 +55,9 @@ public sealed class TrayApp : ApplicationContext
     // Pending subfolder request — set when the user opens Select Folders
     private TaskCompletionSource<SubfoldersResultPayload?>? _pendingSubfolders;
 
+    // Pending activity history request
+    private TaskCompletionSource<ActivityHistoryPayload?>? _pendingActivityHistory;
+
     public TrayApp(IpcClient ipcClient, ILogger<TrayApp> logger, SyncConfig? config = null)
     {
         _ipcClient    = ipcClient;
@@ -222,6 +225,7 @@ public sealed class TrayApp : ApplicationContext
         // --- Primary actions ---
         _menu.Items.Add("Open SyncIT Folder", null, OnOpenSyncFolder);
         _menu.Items.Add("Open Status...",      null, OnOpenStatus);
+        _menu.Items.Add("Activity History...", null, OnOpenActivityHistory);
 
         _menu.Items.Add(new ToolStripSeparator());
 
@@ -318,6 +322,11 @@ public sealed class TrayApp : ApplicationContext
             case IpcMessageType.SubfoldersResult:
                 var subResult = IpcSerializer.DeserializePayload<SubfoldersResultPayload>(msg.Payload);
                 _pendingSubfolders?.TrySetResult(subResult);
+                break;
+
+            case IpcMessageType.ActivityHistoryResult:
+                var histResult = IpcSerializer.DeserializePayload<ActivityHistoryPayload>(msg.Payload);
+                _pendingActivityHistory?.TrySetResult(histResult);
                 break;
         }
     }
@@ -599,6 +608,25 @@ public sealed class TrayApp : ApplicationContext
         _pendingSubfolders = null;
 
         // The form wrote to syncit.json; the service will hot-reload within ~2 s
+    }
+
+    private void OnOpenActivityHistory(object? sender, EventArgs e)
+    {
+        using var form = new ActivityHistoryForm(async () =>
+        {
+            _pendingActivityHistory = new TaskCompletionSource<ActivityHistoryPayload?>();
+            await _ipcClient.SendAsync(
+                IpcSerializer.Build(IpcMessageType.RequestActivityHistory,
+                    new ActivityHistoryRequest { Limit = 200 }));
+
+            var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            cts.Token.Register(() => _pendingActivityHistory?.TrySetResult(null));
+
+            var result = await _pendingActivityHistory.Task;
+            _pendingActivityHistory = null;
+            return result?.Records;
+        });
+        form.ShowDialog();
     }
 
     private void OnOpenPreferences(object? sender, EventArgs e)

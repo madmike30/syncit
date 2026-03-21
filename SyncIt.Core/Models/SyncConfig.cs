@@ -32,5 +32,32 @@ public class SyncConfig
     /// <summary>Name of the named pipe used for tray↔service IPC.</summary>
     public string PipeName { get; set; } = "SyncItIpc";
 
+    public string ActivityLogPath      { get; set; } = @"%APPDATA%\SyncIt\activity.db";
+    public int    ActivityLogRetentionDays { get; set; } = 30;
+
+    /// <summary>Max upload speed in KB/s. 0 = unlimited.</summary>
+    public int MaxUploadKBps { get; set; } = 0;
+
+    /// <summary>Max download speed in KB/s. 0 = unlimited.</summary>
+    public int MaxDownloadKBps { get; set; } = 0;
+
+    /// <summary>Retry policy for upload operations. Null = use defaults (5 retries, 1s base, 30s max).</summary>
+    public RetryPolicyConfig? UploadRetryPolicy { get; set; }
+
+    /// <summary>Retry policy for download operations. Null = use defaults (5 retries, 1s base, 30s max).</summary>
+    public RetryPolicyConfig? DownloadRetryPolicy { get; set; }
+
+    /// <summary>Retry policy for metadata operations. Null = use defaults (3 retries, 500ms base, 5s max).</summary>
+    public RetryPolicyConfig? MetadataRetryPolicy { get; set; }
+
+    /// <summary>Max retries per file before marking as exhausted. Default 3.</summary>
+    public int MaxFileRetries { get; set; } = 3;
+
+    /// <summary>Base delay in seconds for exponential backoff on file retry. Default 5.</summary>
+    public int RetryBaseDelaySeconds { get; set; } = 5;
+
+    /// <summary>Max delay in seconds for exponential backoff on file retry. Default 300 (5 min).</summary>
+    public int RetryMaxDelaySeconds { get; set; } = 300;
+
     public List<SyncPair> SyncPairs { get; set; } = new();
 }
