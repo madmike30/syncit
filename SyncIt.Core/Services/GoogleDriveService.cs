@@ -325,11 +325,17 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
         segments.Push(file.Name);
 
         var parentId = file.Parents?.FirstOrDefault();
-        for (int depth = 0; depth < 50 && parentId is not null && parentId != rootFolderId; depth++)
-        {
-            if (parentId == "root" || depth > 40)
-                return null; // went past the root folder — not in our tree
 
+        // If this IS the root folder, skip it — it's not "inside" itself
+        if (fileId == rootFolderId) return null;
+
+        // If no parent, can't be inside the root tree
+        if (parentId is null) return null;
+
+        // Walk up the parent chain until we reach rootFolderId
+        bool reachedRoot = (parentId == rootFolderId);
+        for (int depth = 0; depth < 50 && !reachedRoot && parentId is not null; depth++)
+        {
             var parent = await GetFileAsync(parentId, ct);
             if (parent is null) return null;
 
@@ -338,7 +344,11 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
             segments.Push(parent.Name);
 
             parentId = parent.Parents?.FirstOrDefault();
+            reachedRoot = (parentId == rootFolderId);
         }
+
+        // If we never reached the root folder, this file is outside our tree
+        if (!reachedRoot) return null;
 
         return string.Join("/", segments);
     }
