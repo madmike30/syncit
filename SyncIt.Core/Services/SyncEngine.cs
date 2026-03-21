@@ -358,6 +358,11 @@ public sealed class SyncEngine : ISyncEngine
                 // Clear from retry tracker on success
                 _retryTracker?.MarkSuccess(change);
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                _logger.LogDebug("Change processing cancelled for '{Path}' (shutdown).", change.RelativePath);
+                break;
+            }
             catch (Exception ex)
             {
                 Interlocked.Increment(ref _errors);
@@ -419,6 +424,11 @@ public sealed class SyncEngine : ISyncEngine
             await _stateStore.SetLastSyncTimeAsync(pair.Id, DateTime.UtcNow);
             _metrics.EndCycle();
             SetState(SyncState.Idle);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            _metrics.EndCycle();
+            _logger.LogInformation("Sync cycle cancelled for pair {Id} (shutdown).", pair.Id);
         }
         catch (Exception ex)
         {
