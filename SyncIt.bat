@@ -18,6 +18,5 @@ if not exist "%APP_EXE%" (
     )
 )
 
-REM Launch SyncIt and close the cmd window immediately
-start "" /B "%APP_EXE%"
-exit
+REM Launch SyncIt detached, then close this console
+start "" "%APP_EXE%"
