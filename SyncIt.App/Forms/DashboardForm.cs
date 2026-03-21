@@ -35,6 +35,7 @@ public sealed class DashboardForm : Form
     private readonly Func<Task<List<ActivityRecord>?>> _fetchActivity;
     private readonly Action<string> _changeSyncFolder;       // pairId
     private readonly Action<string> _changeDriveFolder;     // pairId
+    private readonly Action<string> _selectSubfolders;      // pairId
     private readonly Action _openSyncFolder;
     private readonly Action? _showAccountForm;
 
@@ -61,7 +62,8 @@ public sealed class DashboardForm : Form
         Action<string> changeSyncFolder,
         Action openSyncFolder,
         Action? showAccountForm = null,
-        Action<string>? changeDriveFolder = null)
+        Action<string>? changeDriveFolder = null,
+        Action<string>? selectSubfolders = null)
     {
         _getStatus        = getStatus;
         _getTransfers     = getTransfers;
@@ -71,6 +73,7 @@ public sealed class DashboardForm : Form
         _fetchActivity    = fetchActivity;
         _changeSyncFolder = changeSyncFolder;
         _changeDriveFolder = changeDriveFolder ?? (_ => { });
+        _selectSubfolders  = selectSubfolders ?? (_ => { });
         _openSyncFolder   = openSyncFolder;
         _showAccountForm  = showAccountForm;
 
@@ -334,6 +337,19 @@ public sealed class DashboardForm : Form
         }
     }
 
+    private void OnSelectSubfoldersClick(string pairId)
+    {
+        _refreshTimer?.Stop();
+        try
+        {
+            _selectSubfolders(pairId);
+        }
+        finally
+        {
+            _refreshTimer?.Start();
+        }
+    }
+
     private void OnChangeDriveFolderClick(string pairId)
     {
         _refreshTimer?.Stop();
@@ -405,7 +421,7 @@ public sealed class DashboardForm : Form
             var card = new Panel
             {
                 Location  = new Point(0, y),
-                Size      = new Size(_pairsContainer.Width - 32, 72),
+                Size      = new Size(_pairsContainer.Width - 32, 96),
                 Anchor    = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
                 BackColor = CardBg,
                 Padding   = new Padding(12, 8, 12, 8),
@@ -459,6 +475,60 @@ public sealed class DashboardForm : Form
                 MaximumSize = new Size(card.Width - 140, 0),
             };
 
+            // Subfolder summary
+            var subs = pair.SelectedSubfolders;
+            string subText;
+            string? subTooltip = null;
+            Color subColor;
+            if (subs.Count == 0)
+            {
+                subText  = "Syncing all folders";
+                subColor = AccentGreen;
+            }
+            else if (subs.Count <= 3)
+            {
+                subText  = "Syncing: " + string.Join(", ", subs);
+                subColor = Color.FromArgb(30, 30, 30);
+            }
+            else
+            {
+                subText    = $"Syncing {subs.Count} folders";
+                subTooltip = string.Join("\n", subs);
+                subColor   = Color.FromArgb(30, 30, 30);
+            }
+
+            var subfolderLabel = new Label
+            {
+                Text      = subText,
+                Font      = new Font("Segoe UI", 8f),
+                ForeColor = subColor,
+                AutoSize  = true,
+                Location  = new Point(28, 64),
+                MaximumSize = new Size(card.Width - 280, 0),
+            };
+            if (subTooltip is not null)
+            {
+                var tip = new ToolTip();
+                tip.SetToolTip(subfolderLabel, subTooltip);
+            }
+
+            var pairId = pair.SyncPairId;
+
+            var selectFoldersBtn = new Button
+            {
+                Text      = "Select folders",
+                Font      = new Font("Segoe UI", 8f),
+                ForeColor = AccentBlue,
+                BackColor = CardBg,
+                FlatStyle = FlatStyle.Flat,
+                Size      = new Size(95, 24),
+                Location  = new Point(Math.Max(140, card.Width - 346), 8),
+                Anchor    = AnchorStyles.Top | AnchorStyles.Right,
+                Cursor    = Cursors.Hand,
+            };
+            selectFoldersBtn.FlatAppearance.BorderColor = CardBorder;
+            selectFoldersBtn.Click += (_, _) => OnSelectSubfoldersClick(pairId);
+
             var changeDriveFolderBtn = new Button
             {
                 Text      = "Change Drive folder",
@@ -467,12 +537,11 @@ public sealed class DashboardForm : Form
                 BackColor = CardBg,
                 FlatStyle = FlatStyle.Flat,
                 Size      = new Size(130, 24),
-                Location  = new Point(Math.Max(140, card.Width - 236), 8),
+                Location  = new Point(Math.Max(240, card.Width - 246), 8),
                 Anchor    = AnchorStyles.Top | AnchorStyles.Right,
                 Cursor    = Cursors.Hand,
             };
             changeDriveFolderBtn.FlatAppearance.BorderColor = CardBorder;
-            var pairId = pair.SyncPairId;
             changeDriveFolderBtn.Click += (_, _) => OnChangeDriveFolderClick(pairId);
 
             var changeFolderBtn = new Button
@@ -483,7 +552,7 @@ public sealed class DashboardForm : Form
                 BackColor = CardBg,
                 FlatStyle = FlatStyle.Flat,
                 Size      = new Size(110, 24),
-                Location  = new Point(Math.Max(275, card.Width - 106), 8),
+                Location  = new Point(Math.Max(375, card.Width - 111), 8),
                 Anchor    = AnchorStyles.Top | AnchorStyles.Right,
                 Cursor    = Cursors.Hand,
             };
@@ -505,11 +574,13 @@ public sealed class DashboardForm : Form
             card.Controls.Add(nameLabel);
             card.Controls.Add(stateLabel);
             card.Controls.Add(pathLabel);
+            card.Controls.Add(subfolderLabel);
+            card.Controls.Add(selectFoldersBtn);
             card.Controls.Add(changeDriveFolderBtn);
             card.Controls.Add(changeFolderBtn);
 
             _pairsContainer.Controls.Add(card);
-            y += 80;
+            y += 104;
         }
 
         if (status.PairStatuses.Count == 0)

@@ -214,14 +214,15 @@ public sealed class SyncEngine : ISyncEngine
 
     public SyncPairStatus GetStatus() => new()
     {
-        SyncPairId       = _pair.Id,
-        LocalPath        = _pair.LocalPath,
-        RemoteFolderName = _pair.RemoteFolderName,
-        State            = _state,
-        PendingChanges   = _changeQueue.ReadyCount + _changeQueue.PendingCount,
-        FailedOperations = _retryTracker?.FailedCount ?? 0,
-        ExhaustedRetries = _retryTracker?.ExhaustedCount ?? 0,
-        LastError        = _lastError,
+        SyncPairId         = _pair.Id,
+        LocalPath          = _pair.LocalPath,
+        RemoteFolderName   = _pair.RemoteFolderName,
+        State              = _state,
+        PendingChanges     = _changeQueue.ReadyCount + _changeQueue.PendingCount,
+        FailedOperations   = _retryTracker?.FailedCount ?? 0,
+        ExhaustedRetries   = _retryTracker?.ExhaustedCount ?? 0,
+        LastError          = _lastError,
+        SelectedSubfolders = _pair.SelectedSubfolders,
     };
 
     // -------------------------------------------------------------------------

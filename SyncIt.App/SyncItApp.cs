@@ -447,7 +447,8 @@ public sealed class SyncItApp : ApplicationContext
             changeSyncFolder: pairId => ChangeSyncFolder(pairId),
             openSyncFolder:   () => OpenSyncFolder(),
             showAccountForm:  () => ShowAccountForm(),
-            changeDriveFolder: pairId => ChangeDriveFolder(pairId)
+            changeDriveFolder: pairId => ChangeDriveFolder(pairId),
+            selectSubfolders:  pairId => SelectSubfolders(pairId)
         );
         _dashboard.FormClosed += (_, _) => _dashboard = null;
         _dashboard.Show();
@@ -551,6 +552,45 @@ public sealed class SyncItApp : ApplicationContext
         }
     }
 
+    private void SelectSubfolders(string pairId)
+    {
+        if (_driveService is null)
+        {
+            MessageBox.Show("Not connected to Google Drive yet.", "SyncIt",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var pair = _config.SyncPairs.FirstOrDefault(p => p.Id == pairId);
+        if (pair is null) return;
+
+        var driveService = _driveService;
+        var loadTask = Task.Run<SubfoldersResultPayload?>(async () =>
+        {
+            try
+            {
+                var folders = await driveService.ListSubfoldersAsync(pair.RemoteFolderId);
+                return new SubfoldersResultPayload
+                {
+                    SyncPairId = pair.Id,
+                    Subfolders = folders.Select(f => new SubfolderEntry
+                    {
+                        Name         = f.Name,
+                        RelativePath = f.RelativePath,
+                        DriveId      = f.DriveId,
+                    }).ToList(),
+                };
+            }
+            catch (Exception ex)
+            {
+                return new SubfoldersResultPayload { SyncPairId = pair.Id, Error = ex.Message };
+            }
+        });
+
+        using var form = new SelectFoldersForm(pair, ConfigPath, loadTask);
+        form.ShowDialog();
+    }
+
     private void ChangeDriveFolder(string pairId)
     {
         if (_driveService is null)
@@ -577,6 +617,7 @@ public sealed class SyncItApp : ApplicationContext
 
             cfgPair.RemoteFolderId   = newFolderId;
             cfgPair.RemoteFolderName = newFolderName;
+            cfgPair.SelectedSubfolders = new List<string>(); // Reset — new folder has different subfolders
 
             var writeOpts = new JsonSerializerOptions
             {
@@ -586,9 +627,12 @@ public sealed class SyncItApp : ApplicationContext
             };
             File.WriteAllText(ConfigPath, JsonSerializer.Serialize(config, writeOpts));
 
-            MessageBox.Show(
-                $"Drive folder changed to:\n{newFolderName}\n\nSyncIt will restart the sync engine to apply.",
-                "SyncIt", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            var selectResult = MessageBox.Show(
+                $"Drive folder changed to:\n{newFolderName}\n\nWould you like to select specific folders to sync?\nClick No to sync everything.",
+                "SyncIt", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+
+            if (selectResult == DialogResult.Yes)
+                SelectSubfolders(pairId);
         }
         catch (Exception ex)
         {

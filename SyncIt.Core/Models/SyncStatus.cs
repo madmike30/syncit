@@ -53,4 +53,5 @@ public class SyncPairStatus
     public int      FailedOperations  { get; set; }
     public int      ExhaustedRetries  { get; set; }
     public string?  LastError         { get; set; }
+    public List<string> SelectedSubfolders { get; set; } = new();
 }
