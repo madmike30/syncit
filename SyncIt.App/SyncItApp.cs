@@ -40,14 +40,12 @@ public sealed class SyncItApp : ApplicationContext
     private ContextMenuStrip _menu = null!;
 
     // Menu items updated dynamically
-    private ToolStripMenuItem _accountItem = null!;
-    private ToolStripMenuItem _storageItem = null!;
-    private ToolStripMenuItem _activityItem1 = null!;
-    private ToolStripMenuItem _activityItem2 = null!;
-    private ToolStripMenuItem _activityItem3 = null!;
+    private ToolStripMenuItem _statusItem = null!;
     private ToolStripMenuItem _pauseItem = null!;
     private ToolStripMenuItem _autoStartItem = null!;
-    private ToolStripMenuItem _notificationsItem = null!;
+
+    // Dashboard (kept alive so it can be shown/hidden)
+    private DashboardForm? _dashboard;
 
     // ── Sync engine state (in-process, no IPC) ─────────────────────────────────
     private SyncConfig _config = new();
@@ -311,47 +309,23 @@ public sealed class SyncItApp : ApplicationContext
     {
         _menu = new ContextMenuStrip { ShowImageMargin = false };
 
-        _accountItem = new ToolStripMenuItem("SyncIt") { Enabled = false };
-        _accountItem.Font = new Font(_accountItem.Font, FontStyle.Bold);
-        _menu.Items.Add(_accountItem);
-
-        _storageItem = new ToolStripMenuItem("Starting...") { Enabled = false };
-        _menu.Items.Add(_storageItem);
+        _statusItem = new ToolStripMenuItem("SyncIt — Starting...") { Enabled = false };
+        _statusItem.Font = new Font(_statusItem.Font, FontStyle.Bold);
+        _menu.Items.Add(_statusItem);
         _menu.Items.Add(new ToolStripSeparator());
 
-        _activityItem1 = new ToolStripMenuItem("No recent activity") { Enabled = false };
-        _activityItem2 = new ToolStripMenuItem("") { Enabled = false, Visible = false };
-        _activityItem3 = new ToolStripMenuItem("") { Enabled = false, Visible = false };
-        _menu.Items.Add(_activityItem1);
-        _menu.Items.Add(_activityItem2);
-        _menu.Items.Add(_activityItem3);
-        _menu.Items.Add(new ToolStripSeparator());
-
+        _menu.Items.Add("Open Dashboard",      null, (_, _) => ShowDashboard());
         _menu.Items.Add("Open Sync Folder",    null, OnOpenSyncFolder);
-        _menu.Items.Add("Open Status...",       null, OnOpenStatus);
-        _menu.Items.Add("Activity History...",  null, OnOpenActivityHistory);
-        _menu.Items.Add(new ToolStripSeparator());
-
         _menu.Items.Add("Sync Now",            null, OnSyncNow);
         _pauseItem = new ToolStripMenuItem("Pause Syncing", null, OnPauseResume);
         _menu.Items.Add(_pauseItem);
-        _menu.Items.Add("Select Folders...",   null, OnSelectFolders);
         _menu.Items.Add(new ToolStripSeparator());
-
-        _menu.Items.Add("Preferences...",      null, OnOpenPreferences);
-        _menu.Items.Add("Open Log Folder",     null, OnOpenLogFolder);
 
         _autoStartItem = new ToolStripMenuItem("Start with Windows", null, OnToggleAutoStart)
         {
             Checked = AutoStartHelper.IsEnabled,
         };
         _menu.Items.Add(_autoStartItem);
-
-        _notificationsItem = new ToolStripMenuItem("Notifications", null, OnToggleNotifications)
-        {
-            Checked = _traySettings.NotificationsEnabled,
-        };
-        _menu.Items.Add(_notificationsItem);
         _menu.Items.Add(new ToolStripSeparator());
 
         _menu.Items.Add("Quit SyncIt", null, OnExit);
@@ -364,7 +338,7 @@ public sealed class SyncItApp : ApplicationContext
             Visible          = true,
         };
 
-        _notifyIcon.DoubleClick += OnOpenStatus;
+        _notifyIcon.DoubleClick += (_, _) => ShowDashboard();
     }
 
     // =========================================================================
@@ -385,72 +359,58 @@ public sealed class SyncItApp : ApplicationContext
 
         SetTooltip(BuildTooltip(status));
 
-        if (status.AccountEmail is not null)
-            _accountItem.Text = $"SyncIt — {status.AccountEmail}";
-
-        UpdateStorageDisplay(status);
+        var stateText = status.State switch
+        {
+            SyncState.Idle    => "Up to date",
+            SyncState.Syncing => "Syncing...",
+            SyncState.Paused  => "Paused",
+            SyncState.Error   => "Error",
+            _                 => status.State.ToString(),
+        };
+        _statusItem.Text = status.AccountEmail is not null
+            ? $"SyncIt — {stateText}"
+            : $"SyncIt — {stateText}";
         _pauseItem.Text = status.State == SyncState.Paused ? "Resume Syncing" : "Pause Syncing";
-        UpdateRecentActivity(status);
     }
 
-    private void UpdateStorageDisplay(SyncStatus status)
+    // =========================================================================
+    // Dashboard
+    // =========================================================================
+
+    private void ShowDashboard()
     {
-        if (status.StorageTotalBytes > 0)
+        if (_dashboard is not null && !_dashboard.IsDisposed)
         {
-            var used  = FormatBytes(status.StorageUsedBytes);
-            var total = FormatBytes(status.StorageTotalBytes);
-            var pct   = (double)status.StorageUsedBytes / status.StorageTotalBytes;
-            var bar   = BuildProgressBar(pct, 10);
-            _storageItem.Text = $"{bar}  {used} / {total}";
+            _dashboard.WindowState = FormWindowState.Normal;
+            _dashboard.BringToFront();
+            _dashboard.Activate();
+            return;
         }
-        else if (status.AccountEmail is not null)
-        {
-            _storageItem.Text = status.State switch
+
+        _dashboard = new DashboardForm(
+            getStatus:        () => _lastStatus,
+            getTransfers:     () => _activeTransfers,
+            syncNow:          () => { foreach (var e in _engines) _ = Task.Run(() => e.TriggerSyncAsync(_engineCts.Token)); },
+            pauseResume:      () =>
             {
-                SyncState.Idle    => "Up to date",
-                SyncState.Syncing => "Syncing...",
-                SyncState.Paused  => "Paused",
-                SyncState.Error   => "Error",
-                _ => status.State.ToString(),
-            };
-        }
-    }
-
-    private void UpdateRecentActivity(SyncStatus status)
-    {
-        var items = new List<string>();
-
-        if (_activeTransfers is not null)
-            foreach (var t in _activeTransfers.Take(3))
-            {
-                var dir  = t.Direction == TransferDirection.Upload ? "\u2191" : "\u2193";
-                items.Add($"{dir} {Path.GetFileName(t.RelativePath)} — {t.ProgressPercent:F0}%");
-            }
-
-        foreach (var pair in status.PairStatuses)
-            if (pair.State == SyncState.Idle && pair.PendingChanges == 0)
-            {
-                var entry = $"\u2713 {pair.RemoteFolderName} — up to date";
-                if (_recentActivity.Count == 0 || _recentActivity[0] != entry)
-                {
-                    _recentActivity.Insert(0, entry);
-                    if (_recentActivity.Count > 3) _recentActivity.RemoveAt(3);
-                }
-            }
-
-        foreach (var r in _recentActivity)
-            if (items.Count < 3) items.Add(r);
-
-        SetActivityItem(_activityItem1, items.Count > 0 ? items[0] : "No recent activity", items.Count > 0);
-        SetActivityItem(_activityItem2, items.Count > 1 ? items[1] : "", items.Count > 1);
-        SetActivityItem(_activityItem3, items.Count > 2 ? items[2] : "", items.Count > 2);
+                _globalPaused = !_globalPaused;
+                foreach (var e in _engines) { if (_globalPaused) e.Pause(); else e.Resume(); }
+                PushStatus();
+            },
+            isPaused:         () => _globalPaused,
+            fetchActivity:    async () => _activityLog is null ? null : await _activityLog.GetRecentAsync(200),
+            changeSyncFolder: pairId => ChangeSyncFolder(pairId),
+            openSyncFolder:   () => OpenSyncFolder()
+        );
+        _dashboard.FormClosed += (_, _) => _dashboard = null;
+        _dashboard.Show();
     }
 
     // =========================================================================
     // Menu handlers — direct engine calls (no IPC)
     // =========================================================================
 
-    private void OnOpenSyncFolder(object? sender, EventArgs e)
+    private void OpenSyncFolder()
     {
         var localPath = _config.SyncPairs.FirstOrDefault(p => p.Enabled)?.LocalPath;
         if (localPath is not null)
@@ -461,21 +421,7 @@ public sealed class SyncItApp : ApplicationContext
         MessageBox.Show("No sync folder configured.", "SyncIt", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
-    private void OnOpenStatus(object? sender, EventArgs e)
-    {
-        using var form = new StatusForm(_lastStatus, _activeTransfers);
-        form.ShowDialog();
-    }
-
-    private void OnOpenActivityHistory(object? sender, EventArgs e)
-    {
-        using var form = new ActivityHistoryForm(async () =>
-        {
-            if (_activityLog is null) return null;
-            return await _activityLog.GetRecentAsync(200);
-        });
-        form.ShowDialog();
-    }
+    private void OnOpenSyncFolder(object? sender, EventArgs e) => OpenSyncFolder();
 
     private void OnSyncNow(object? sender, EventArgs e)
     {
@@ -494,72 +440,54 @@ public sealed class SyncItApp : ApplicationContext
         PushStatus();
     }
 
-    private void OnSelectFolders(object? sender, EventArgs e)
+    private void ChangeSyncFolder(string pairId)
     {
-        var pairs = _config.SyncPairs;
-        if (pairs.Count == 0)
+        var pair = _config.SyncPairs.FirstOrDefault(p => p.Id == pairId);
+        if (pair is null) return;
+
+        using var dialog = new FolderBrowserDialog
         {
-            MessageBox.Show("No sync pairs configured.", "SyncIt", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            Description         = $"Choose local folder for \"{pair.RemoteFolderName}\"",
+            UseDescriptionForTitle = true,
+            SelectedPath        = PathHelper.Expand(pair.LocalPath),
+            ShowNewFolderButton = true,
+        };
+
+        if (dialog.ShowDialog() != DialogResult.OK) return;
+
+        var newPath = dialog.SelectedPath;
+        if (string.Equals(PathHelper.Expand(pair.LocalPath), newPath, StringComparison.OrdinalIgnoreCase))
             return;
-        }
 
-        SyncPair? target = pairs.Count == 1
-            ? pairs[0]
-            : PickPair(pairs);
-        if (target is null) return;
-
-        // Get subfolders directly from drive service (no IPC round-trip)
-        var tcs = new TaskCompletionSource<SubfoldersResultPayload?>();
-        _ = Task.Run(async () =>
+        // Update config file
+        try
         {
-            try
+            var json   = File.ReadAllText(ConfigPath);
+            var config = JsonSerializer.Deserialize<SyncConfig>(json, JsonOpts);
+            if (config is null) return;
+
+            var cfgPair = config.SyncPairs.FirstOrDefault(p => p.Id == pairId);
+            if (cfgPair is null) return;
+
+            cfgPair.LocalPath = newPath;
+
+            var writeOpts = new JsonSerializerOptions
             {
-                if (_driveService is null) { tcs.SetResult(null); return; }
-                var subfolders = await _driveService.ListSubfoldersAsync(target.RemoteFolderId, ct: _engineCts.Token);
-                tcs.SetResult(new SubfoldersResultPayload
-                {
-                    SyncPairId = target.Id,
-                    Subfolders = subfolders.Select(s => new SubfolderEntry
-                    {
-                        Name = s.Name,
-                        RelativePath = s.RelativePath,
-                        DriveId = s.DriveId,
-                    }).ToList(),
-                });
-            }
-            catch (Exception ex)
-            {
-                tcs.SetResult(new SubfoldersResultPayload
-                {
-                    SyncPairId = target.Id,
-                    Error = ex.Message,
-                });
-            }
-        });
+                PropertyNameCaseInsensitive = true,
+                WriteIndented               = true,
+                Converters                  = { new JsonStringEnumConverter() },
+            };
+            File.WriteAllText(ConfigPath, JsonSerializer.Serialize(config, writeOpts));
 
-        using var form = new SelectFoldersForm(target, ConfigPath, tcs.Task);
-        form.ShowDialog();
-    }
-
-    private static SyncPair? PickPair(List<SyncPair> pairs)
-    {
-        using var picker = new PairPickerDialog(pairs);
-        return picker.ShowDialog() == DialogResult.OK ? picker.SelectedPair : null;
-    }
-
-    private void OnOpenPreferences(object? sender, EventArgs e)
-    {
-        if (File.Exists(ConfigPath))
-            Process.Start(new ProcessStartInfo(ConfigPath) { UseShellExecute = true });
-        else
-            MessageBox.Show($"Config not found:\n{ConfigPath}", "SyncIt", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-    }
-
-    private void OnOpenLogFolder(object? sender, EventArgs e)
-    {
-        var logDir = PathHelper.Expand(@"%APPDATA%\SyncIt\logs");
-        if (Directory.Exists(logDir))
-            Process.Start("explorer.exe", logDir);
+            MessageBox.Show(
+                $"Sync folder changed to:\n{newPath}\n\nSyncIt will restart the sync engine to apply.",
+                "SyncIt", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to update config:\n{ex.Message}", "SyncIt",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     private void OnToggleAutoStart(object? sender, EventArgs e)
@@ -568,15 +496,9 @@ public sealed class SyncItApp : ApplicationContext
         _autoStartItem.Checked = AutoStartHelper.IsEnabled;
     }
 
-    private void OnToggleNotifications(object? sender, EventArgs e)
-    {
-        _traySettings.NotificationsEnabled = !_traySettings.NotificationsEnabled;
-        _traySettings.Save();
-        _notificationsItem.Checked = _traySettings.NotificationsEnabled;
-    }
-
     private void OnExit(object? sender, EventArgs e)
     {
+        _dashboard?.Close();
         _notifyIcon.Visible = false;
         _engineCts.Cancel();
         Application.Exit();
@@ -639,7 +561,6 @@ public sealed class SyncItApp : ApplicationContext
         if ((DateTime.UtcNow - _lastTransferPush).TotalSeconds < 1) return;
         _lastTransferPush = DateTime.UtcNow;
         _activeTransfers = _engines.SelectMany(e => e.TransferTracker.ActiveTransfers).ToList();
-        InvokeUI(() => UpdateRecentActivity(_lastStatus ?? new SyncStatus()));
     }
 
     // =========================================================================
@@ -689,27 +610,6 @@ public sealed class SyncItApp : ApplicationContext
             ? $"SyncIt — {status.AccountEmail}\n{state}"
             : $"SyncIt — {state}";
         return tip;
-    }
-
-    private static void SetActivityItem(ToolStripMenuItem item, string text, bool visible)
-    {
-        item.Text = text;
-        item.Visible = visible || text == "No recent activity";
-    }
-
-    private static string BuildProgressBar(double fraction, int width)
-    {
-        fraction = Math.Clamp(fraction, 0, 1);
-        int filled = (int)(fraction * width);
-        return new string('\u2588', filled) + new string('\u2591', width - filled);
-    }
-
-    private static string FormatBytes(long bytes)
-    {
-        if (bytes >= 1024L * 1024 * 1024) return $"{bytes / (1024.0 * 1024.0 * 1024.0):F1} GB";
-        if (bytes >= 1024 * 1024) return $"{bytes / (1024.0 * 1024.0):F1} MB";
-        if (bytes >= 1024) return $"{bytes / 1024.0:F1} KB";
-        return $"{bytes} B";
     }
 
     private IFileStateStore CreateStateStore() =>

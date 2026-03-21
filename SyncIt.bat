@@ -18,4 +18,6 @@ if not exist "%APP_EXE%" (
     )
 )
 
-start "" "%APP_EXE%"
+REM Launch SyncIt and close the cmd window immediately
+start "" /B "%APP_EXE%"
+exit
