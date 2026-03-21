@@ -770,13 +770,22 @@ public sealed class SyncEngine : ISyncEngine
         SyncPair pair,
         CancellationToken ct)
     {
+        var isGoogleAppsType = file.MimeType?.StartsWith("application/vnd.google-apps.", StringComparison.Ordinal) == true;
+        var isFolder = file.MimeType == "application/vnd.google-apps.folder";
+
         // Google Apps types that aren't in our export map can never be downloaded —
         // skip them silently (e.g. shortcuts, maps, sites, Jamboard, etc.)
-        if (file.MimeType?.StartsWith("application/vnd.google-apps.", StringComparison.Ordinal) == true
-            && !GoogleDocExportMap.IsGoogleDoc(file.MimeType)
-            && file.MimeType != "application/vnd.google-apps.folder")
+        if (isGoogleAppsType && !GoogleDocExportMap.IsGoogleDoc(file.MimeType) && !isFolder)
         {
             _logger.LogDebug("Skipping non-downloadable Google Apps file: {Path} (MIME: {Mime})", relativePath, file.MimeType);
+            return;
+        }
+
+        // Folders are handled by EnsureFolderPathAsync, not download
+        if (isFolder)
+        {
+            var folderLocalPath = PathHelper.ToAbsolute(pair.LocalPath, relativePath);
+            Directory.CreateDirectory(folderLocalPath);
             return;
         }
 
@@ -794,6 +803,12 @@ public sealed class SyncEngine : ISyncEngine
                 return;
             }
             outputPath = Path.ChangeExtension(localPath, ext);
+        }
+        else if (isGoogleAppsType)
+        {
+            // Safety: any remaining google-apps type without an export mapping can't be downloaded
+            _logger.LogDebug("Skipping unknown Google Apps type: {Path} (MIME: {Mime})", relativePath, file.MimeType);
+            return;
         }
 
         await _transferSlim.WaitAsync(ct);
