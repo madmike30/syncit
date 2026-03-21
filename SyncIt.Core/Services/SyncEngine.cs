@@ -122,12 +122,20 @@ public sealed class SyncEngine : ISyncEngine
         // Step 3: Set up FileSystemWatcher
         SetupFileSystemWatcher(pair);
 
-        // Step 4: Initial sync if no baseline exists
+        // Step 4: Initial sync if no baseline exists, otherwise reconcile
         var baselineCount = await _stateStore.CountRecordsAsync(pair.Id, SyncSide.Local);
         if (baselineCount == 0)
         {
             SetState(SyncState.Syncing, "Initial sync...");
             await InitialSyncAsync(pair, ct);
+        }
+        else
+        {
+            // Reconcile: detect local changes that happened while the engine was stopped.
+            // FSW only catches live events — files created/modified/deleted while we were
+            // down are invisible without this scan.
+            SetState(SyncState.Syncing, "Reconciling...");
+            await ReconcileLocalChangesAsync(pair, ct);
         }
 
         SetState(SyncState.Idle);
@@ -479,6 +487,90 @@ public sealed class SyncEngine : ISyncEngine
         }
 
         _logger.LogInformation("Initial sync complete for pair '{Id}'.", pair.Id);
+    }
+
+    /// <summary>
+    /// Detects local changes that happened while the engine was stopped.
+    /// Compares baseline records against actual filesystem state and enqueues
+    /// synthetic events for any discrepancies.
+    /// </summary>
+    private async Task ReconcileLocalChangesAsync(SyncPair pair, CancellationToken ct)
+    {
+        _logger.LogInformation("Reconciling local changes for pair '{Id}'...", pair.Id);
+        int deleted = 0, modified = 0, created = 0;
+
+        // 1. Check baseline records against actual files — detect deletes and modifications
+        var baselinePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await foreach (var rec in _stateStore.StreamRecordsAsync(pair.Id, SyncSide.Local, ct))
+        {
+            if (rec.IsDeleted) continue;
+            baselinePaths.Add(rec.RelativePath);
+
+            var absPath = PathHelper.ToAbsolute(pair.LocalPath, rec.RelativePath);
+
+            if (!IOFile.Exists(absPath))
+            {
+                // File in baseline but missing locally — was deleted while we were stopped
+                _changeQueue.Enqueue(new ChangeEvent
+                {
+                    SyncPairId   = pair.Id,
+                    Side         = SyncSide.Local,
+                    Kind         = ChangeKind.Deleted,
+                    RelativePath = rec.RelativePath,
+                });
+                deleted++;
+            }
+            else
+            {
+                // File exists — check if modified since baseline
+                var detectResult = FastChangeDetector.CheckLocalFile(absPath, rec);
+                if (detectResult == ChangeResult.NeedsHash)
+                {
+                    _changeQueue.Enqueue(new ChangeEvent
+                    {
+                        SyncPairId   = pair.Id,
+                        Side         = SyncSide.Local,
+                        Kind         = ChangeKind.Modified,
+                        RelativePath = rec.RelativePath,
+                    });
+                    modified++;
+                }
+            }
+        }
+
+        // 2. Check for new local files not in baseline
+        if (Directory.Exists(pair.LocalPath))
+        {
+            foreach (var absPath in Directory.EnumerateFiles(pair.LocalPath, "*", SearchOption.AllDirectories))
+            {
+                var rel = TryMakeRelative(pair.LocalPath, absPath);
+                if (rel is null || !_globFilter.IsIncluded(rel, pair)) continue;
+                if (baselinePaths.Contains(rel)) continue;
+
+                try
+                {
+                    var fi = new FileInfo(absPath);
+                    if (fi.Length > pair.MaxFileSizeBytes) continue;
+                }
+                catch { continue; }
+
+                _changeQueue.Enqueue(new ChangeEvent
+                {
+                    SyncPairId   = pair.Id,
+                    Side         = SyncSide.Local,
+                    Kind         = ChangeKind.Created,
+                    RelativePath = rel,
+                });
+                created++;
+            }
+        }
+
+        if (deleted + modified + created > 0)
+            _logger.LogInformation(
+                "Reconciliation found {Del} deleted, {Mod} modified, {New} new files for pair '{Id}'.",
+                deleted, modified, created, pair.Id);
+        else
+            _logger.LogDebug("Reconciliation: no local changes detected for pair '{Id}'.", pair.Id);
     }
 
     // -------------------------------------------------------------------------
