@@ -174,7 +174,8 @@ public sealed class SyncItApp : ApplicationContext
             {
                 var localPath = PathHelper.Expand(firstPair.LocalPath);
                 _overlayStore = new CloudSyncProvider(localPath, "SyncIt", CreateLogger<CloudSyncProvider>());
-                await _overlayStore.InitializeAsync(ct);
+                await _overlayStore.InitializeAsync(
+                    isSyncedFilter: path => globFilter.IsIncluded(path, firstPair), ct);
             }
 
             // Start engines
@@ -214,18 +215,20 @@ public sealed class SyncItApp : ApplicationContext
                         }
 
                         // Recreate overlay store for the (possibly new) sync folder path
+                        var reloadGlobFilter = new GlobFilter();
                         if (newPair is not null)
                         {
                             var newLocalPath = PathHelper.Expand(newPair.LocalPath);
                             _overlayStore?.Dispose();
                             _overlayStore = new CloudSyncProvider(newLocalPath, "SyncIt", CreateLogger<CloudSyncProvider>());
-                            await _overlayStore.InitializeAsync(liveCt);
+                            await _overlayStore.InitializeAsync(
+                                isSyncedFilter: path => reloadGlobFilter.IsIncluded(path, newPair), liveCt);
                             _logger.LogInformation("Overlay store recreated for new path: {Path}", newLocalPath);
                         }
 
                         // Use current drive service and CTS (not stale captured locals)
                         var currentDrive = _driveService as GoogleDriveService ?? driveService;
-                        await StartEnginesAsync(currentDrive, new GlobFilter(), new AtomicFileWriter(CreateLogger<AtomicFileWriter>()), liveCt);
+                        await StartEnginesAsync(currentDrive, reloadGlobFilter, new AtomicFileWriter(CreateLogger<AtomicFileWriter>()), liveCt);
                     }
                     catch (Exception ex)
                     {
@@ -728,16 +731,17 @@ public sealed class SyncItApp : ApplicationContext
         }
 
         firstPair = _config.SyncPairs.FirstOrDefault(p => p.Enabled);
+        var globFilter   = new GlobFilter();
         if (firstPair is not null)
         {
             var localPath = PathHelper.Expand(firstPair.LocalPath);
             _overlayStore?.Dispose();
             _overlayStore = new CloudSyncProvider(localPath, "SyncIt", CreateLogger<CloudSyncProvider>());
-            await _overlayStore.InitializeAsync(ct);
+            await _overlayStore.InitializeAsync(
+                isSyncedFilter: path => globFilter.IsIncluded(path, firstPair), ct);
         }
 
         // 9. Restart engines with new credential
-        var globFilter   = new GlobFilter();
         var atomicWriter = new AtomicFileWriter(CreateLogger<AtomicFileWriter>());
         await Task.Run(() => StartEnginesAsync(driveService, globFilter, atomicWriter, ct));
 

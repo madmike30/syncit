@@ -39,7 +39,7 @@ public sealed class CloudSyncProvider : IOverlayStateStore
         _syncRootId = $"{providerId}!{sid}!default";
     }
 
-    public async Task InitializeAsync(CancellationToken ct = default)
+    public async Task InitializeAsync(Func<string, bool>? isSyncedFilter = null, CancellationToken ct = default)
     {
         try
         {
@@ -48,9 +48,9 @@ public sealed class CloudSyncProvider : IOverlayStateStore
             _registered = true;
             _logger.LogInformation("Cloud sync root registered and connected: {Path}", _syncRootPath);
 
-            // Convert all existing files to placeholders and mark as synced immediately.
-            // This ensures Status column icons appear on startup without waiting for a sync cycle.
-            MarkAllAsSynced();
+            // Convert existing files to placeholders and mark synced items.
+            // Only items passing the filter get green checkmarks; others stay unmarked.
+            MarkAllAsSynced(isSyncedFilter);
         }
         catch (Exception ex)
         {
@@ -58,16 +58,21 @@ public sealed class CloudSyncProvider : IOverlayStateStore
         }
     }
 
-    private void MarkAllAsSynced()
+    private void MarkAllAsSynced(Func<string, bool>? isSyncedFilter)
     {
-        int converted = 0, failed = 0;
+        int converted = 0, skipped = 0, failed = 0;
         try
         {
-            // Convert directories first (bottom-up not required — parent dirs just need placeholder status)
             foreach (var dir in Directory.EnumerateDirectories(_syncRootPath, "*", SearchOption.AllDirectories))
             {
                 try
                 {
+                    var relativePath = Path.GetRelativePath(_syncRootPath, dir).Replace('\\', '/');
+                    if (isSyncedFilter is not null && !isSyncedFilter(relativePath))
+                    {
+                        skipped++;
+                        continue;
+                    }
                     EnsurePlaceholder(dir);
                     SetInSyncState(dir, true);
                     converted++;
@@ -83,6 +88,12 @@ public sealed class CloudSyncProvider : IOverlayStateStore
             {
                 try
                 {
+                    var relativePath = Path.GetRelativePath(_syncRootPath, file).Replace('\\', '/');
+                    if (isSyncedFilter is not null && !isSyncedFilter(relativePath))
+                    {
+                        skipped++;
+                        continue;
+                    }
                     EnsurePlaceholder(file);
                     SetInSyncState(file, true);
                     converted++;
@@ -93,7 +104,8 @@ public sealed class CloudSyncProvider : IOverlayStateStore
                     _logger.LogDebug(ex, "Failed to convert {Path} to placeholder", file);
                 }
             }
-            _logger.LogInformation("Marked {Count} items as synced ({Failed} failed)", converted, failed);
+            _logger.LogInformation("Marked {Synced} items as synced, {Skipped} skipped ({Failed} failed)",
+                converted, skipped, failed);
         }
         catch (Exception ex)
         {
