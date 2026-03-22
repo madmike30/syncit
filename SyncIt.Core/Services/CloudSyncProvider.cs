@@ -13,8 +13,11 @@ namespace SyncIt.Core.Services;
 /// <summary>
 /// Registers the sync folder as a Windows Cloud Files sync root and sets
 /// per-file sync status via the Cloud Filter API (cldapi.dll).
-/// This drives the Status column in File Explorer — the modern replacement
-/// for legacy IShellIconOverlayIdentifier COM overlays.
+/// This drives the Status column in File Explorer.
+///
+/// Only actively synced items (matching SelectedSubfolders filter) get the
+/// green checkmark (in-sync + pinned). Non-synced items are marked in-sync
+/// but unpinned — they show no icon in the Status column.
 /// </summary>
 [SupportedOSPlatform("windows10.0.19041.0")]
 public sealed class CloudSyncProvider : IOverlayStateStore
@@ -27,7 +30,6 @@ public sealed class CloudSyncProvider : IOverlayStateStore
     private long _connectionKey;
 
     // Tracks how many non-synced files exist under each directory.
-    // When count drops to 0, the directory is marked as in-sync.
     private readonly ConcurrentDictionary<string, int> _dirNotSyncedCount = new(StringComparer.OrdinalIgnoreCase);
 
     public CloudSyncProvider(string syncRootPath, string providerId, ILogger logger, string? displayName = null)
@@ -36,7 +38,6 @@ public sealed class CloudSyncProvider : IOverlayStateStore
         _logger = logger;
         _displayName = displayName ?? Path.GetFileName(_syncRootPath);
 
-        // Build sync root ID: ProviderId!UserSID!AccountId
         var sid = WindowsIdentity.GetCurrent().User?.Value ?? "default";
         _syncRootId = $"{providerId}!{sid}!default";
     }
@@ -50,9 +51,7 @@ public sealed class CloudSyncProvider : IOverlayStateStore
             _registered = true;
             _logger.LogInformation("Cloud sync root registered and connected: {Path}", _syncRootPath);
 
-            // Convert existing files to placeholders and mark synced items.
-            // Only items passing the filter get green checkmarks; others stay unmarked.
-            MarkAllAsSynced(isSyncedFilter);
+            MarkItems(isSyncedFilter);
         }
         catch (Exception ex)
         {
@@ -60,30 +59,30 @@ public sealed class CloudSyncProvider : IOverlayStateStore
         }
     }
 
-    private void MarkAllAsSynced(Func<string, bool>? isSyncedFilter)
+    /// <summary>
+    /// Marks all items under the sync root as placeholders.
+    /// Synced items (passing filter) get green checkmarks (in-sync + pinned).
+    /// Non-synced items get in-sync only (no icon) to suppress the sync-arrows.
+    /// </summary>
+    private void MarkItems(Func<string, bool>? isSyncedFilter)
     {
-        // Under a registered sync root, Windows shows a sync-pending icon for ANY
-        // file that isn't explicitly marked as in-sync. We can't selectively hide
-        // the status column per-item — it's all-or-nothing per sync root.
-        // So we mark everything as in-sync (green checkmark) to avoid confusing
-        // sync arrows on non-synced items. Real-time overlay updates during actual
-        // sync operations (syncing, pending, error) still work correctly for
-        // actively synced folders.
-        int converted = 0, failed = 0;
+        int synced = 0, suppressed = 0, failed = 0;
         try
         {
             foreach (var dir in Directory.EnumerateDirectories(_syncRootPath, "*", SearchOption.AllDirectories))
             {
                 try
                 {
+                    var relativePath = Path.GetRelativePath(_syncRootPath, dir).Replace('\\', '/');
+                    bool isSynced = isSyncedFilter is null || isSyncedFilter(relativePath);
                     EnsurePlaceholder(dir);
-                    SetInSyncState(dir, true);
-                    converted++;
+                    SetInSyncState(dir, true, pin: isSynced);
+                    if (isSynced) synced++; else suppressed++;
                 }
                 catch (Exception ex)
                 {
                     failed++;
-                    _logger.LogDebug(ex, "Failed to convert directory {Path} to placeholder", dir);
+                    _logger.LogDebug(ex, "Failed to update directory {Path}", dir);
                 }
             }
 
@@ -91,21 +90,24 @@ public sealed class CloudSyncProvider : IOverlayStateStore
             {
                 try
                 {
+                    var relativePath = Path.GetRelativePath(_syncRootPath, file).Replace('\\', '/');
+                    bool isSynced = isSyncedFilter is null || isSyncedFilter(relativePath);
                     EnsurePlaceholder(file);
-                    SetInSyncState(file, true);
-                    converted++;
+                    SetInSyncState(file, true, pin: isSynced);
+                    if (isSynced) synced++; else suppressed++;
                 }
                 catch (Exception ex)
                 {
                     failed++;
-                    _logger.LogDebug(ex, "Failed to convert {Path} to placeholder", file);
+                    _logger.LogDebug(ex, "Failed to update {Path}", file);
                 }
             }
-            _logger.LogInformation("Marked {Count} items as synced ({Failed} failed)", converted, failed);
+            _logger.LogInformation("Overlay: {Synced} synced (green), {Suppressed} suppressed (no icon), {Failed} failed",
+                synced, suppressed, failed);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Error scanning sync root for initial placeholder conversion");
+            _logger.LogWarning(ex, "Error scanning sync root for placeholder conversion");
         }
     }
 
@@ -116,7 +118,7 @@ public sealed class CloudSyncProvider : IOverlayStateStore
         {
             bool inSync = state == OverlaySyncState.Synced;
             EnsurePlaceholder(absolutePath);
-            SetInSyncState(absolutePath, inSync);
+            SetInSyncState(absolutePath, inSync, pin: true);
             PropagateParentState(absolutePath, inSync);
         }
         catch (Exception ex)
@@ -135,7 +137,7 @@ public sealed class CloudSyncProvider : IOverlayStateStore
             {
                 bool inSync = state == OverlaySyncState.Synced;
                 EnsurePlaceholder(path);
-                SetInSyncState(path, inSync);
+                SetInSyncState(path, inSync, pin: true);
                 PropagateParentState(path, inSync);
             }
             catch (Exception ex)
@@ -147,16 +149,10 @@ public sealed class CloudSyncProvider : IOverlayStateStore
     }
 
     public Task RemoveAsync(string absolutePath, CancellationToken ct = default)
-    {
-        // File is being deleted — nothing to do with cloud state
-        return Task.CompletedTask;
-    }
+        => Task.CompletedTask;
 
     public Task ClearPairAsync(string localRootPath, CancellationToken ct = default)
-    {
-        // Pair disabled — could unregister sync root, but we'll let Dispose handle it
-        return Task.CompletedTask;
-    }
+        => Task.CompletedTask;
 
     public void Dispose()
     {
@@ -170,9 +166,6 @@ public sealed class CloudSyncProvider : IOverlayStateStore
                     _logger.LogDebug("CfDisconnectSyncRoot failed: 0x{Hr:X8}", hr);
                 _connectionKey = 0;
             }
-            // Don't unregister — we want the sync root to persist across restarts.
-            // Windows will show the folder as "not connected" when the service is stopped,
-            // and reconnect when it starts again.
             _logger.LogInformation("Cloud sync root disconnected: {Path}", _syncRootPath);
         }
         catch (Exception ex)
@@ -186,11 +179,6 @@ public sealed class CloudSyncProvider : IOverlayStateStore
     // Directory state propagation (reference-counting)
     // ---------------------------------------------------------------
 
-    /// <summary>
-    /// Walk up from the file to the sync root, updating parent directory in-sync state.
-    /// Uses a reference-counting approach: each directory tracks how many non-synced
-    /// children it has. When the count reaches 0, the directory is marked as in-sync.
-    /// </summary>
     private void PropagateParentState(string filePath, bool fileIsNowSynced)
     {
         try
@@ -203,20 +191,18 @@ public sealed class CloudSyncProvider : IOverlayStateStore
             {
                 if (fileIsNowSynced)
                 {
-                    // File became synced — decrement parent's not-synced count
                     var newCount = _dirNotSyncedCount.AddOrUpdate(dir, 0, (_, c) => Math.Max(0, c - 1));
                     if (newCount == 0)
                     {
                         EnsurePlaceholder(dir);
-                        SetInSyncState(dir, true);
+                        SetInSyncState(dir, true, pin: true);
                     }
                 }
                 else
                 {
-                    // File became not-synced — increment parent's not-synced count
                     _dirNotSyncedCount.AddOrUpdate(dir, 1, (_, c) => c + 1);
                     EnsurePlaceholder(dir);
-                    SetInSyncState(dir, false);
+                    SetInSyncState(dir, false, pin: false);
                 }
 
                 dir = Path.GetDirectoryName(dir);
@@ -236,46 +222,26 @@ public sealed class CloudSyncProvider : IOverlayStateStore
 
     private void ConnectSyncRoot()
     {
-        // Empty callback table — terminated by CF_CALLBACK_TYPE_NONE sentinel.
-        // Since we use HydrationPolicy.Full, all files are already local and
-        // no hydration/dehydration callbacks are needed. We just need to connect
-        // so Windows knows the provider is running and allows file access.
         var callbackTable = new CfApi.CF_CALLBACK_REGISTRATION[]
         {
             new() { Type = CfApi.CF_CALLBACK_TYPE_NONE, Callback = IntPtr.Zero }
         };
 
         int hr = CfApi.CfConnectSyncRoot(
-            _syncRootPath,
-            callbackTable,
-            IntPtr.Zero,
-            CfApi.CF_CONNECT_FLAG_NONE,
-            out _connectionKey);
+            _syncRootPath, callbackTable, IntPtr.Zero,
+            CfApi.CF_CONNECT_FLAG_NONE, out _connectionKey);
 
-        // If a previous process was killed without disconnecting, the sync root
-        // is still connected with a stale key. Unregister to clear the dead
-        // connection, re-register, and retry.
         if (hr == ERROR_CLOUD_FILE_ALREADY_CONNECTED)
         {
-            _logger.LogWarning("Sync root already connected (stale from previous crash). Unregistering and retrying...");
-            try
-            {
-                StorageProviderSyncRootManager.Unregister(_syncRootId);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Failed to unregister stale sync root");
-            }
+            _logger.LogWarning("Sync root already connected (stale). Unregistering and retrying...");
+            try { StorageProviderSyncRootManager.Unregister(_syncRootId); }
+            catch (Exception ex) { _logger.LogDebug(ex, "Failed to unregister stale sync root"); }
 
-            // Re-register (Unregister clears the dead connection)
             RegisterSyncRootAsync().GetAwaiter().GetResult();
 
             hr = CfApi.CfConnectSyncRoot(
-                _syncRootPath,
-                callbackTable,
-                IntPtr.Zero,
-                CfApi.CF_CONNECT_FLAG_NONE,
-                out _connectionKey);
+                _syncRootPath, callbackTable, IntPtr.Zero,
+                CfApi.CF_CONNECT_FLAG_NONE, out _connectionKey);
         }
 
         if (hr < 0)
@@ -289,8 +255,23 @@ public sealed class CloudSyncProvider : IOverlayStateStore
 
     private async Task RegisterSyncRootAsync()
     {
-        // Always re-register to pick up display name or policy changes.
-        // StorageProviderSyncRootManager.Register is idempotent — it updates if already registered.
+        // Clean up any stale registrations from our provider (e.g. leftover subfolder roots)
+        try
+        {
+            var prefix = $"{_syncRootId.Split('!')[0]}!{_syncRootId.Split('!')[1]}!";
+            var existing = StorageProviderSyncRootManager.GetCurrentSyncRoots();
+            foreach (var root in existing)
+            {
+                if (root.Id.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogDebug("Cleaning up existing sync root: {Id}", root.Id);
+                    try { StorageProviderSyncRootManager.Unregister(root.Id); }
+                    catch { /* best effort */ }
+                }
+            }
+        }
+        catch { /* No existing roots */ }
+
         var folder = await StorageFolder.GetFolderFromPathAsync(_syncRootPath);
 
         var info = new StorageProviderSyncRootInfo
@@ -314,34 +295,15 @@ public sealed class CloudSyncProvider : IOverlayStateStore
         StorageProviderSyncRootManager.Register(info);
     }
 
-    private bool IsAlreadyRegistered()
-    {
-        try
-        {
-            var roots = StorageProviderSyncRootManager.GetCurrentSyncRoots();
-            foreach (var root in roots)
-            {
-                if (root.Id == _syncRootId) return true;
-            }
-        }
-        catch { /* Not registered */ }
-        return false;
-    }
-
     // ---------------------------------------------------------------
     // Cloud Filter API: Placeholder + In-Sync State
     // ---------------------------------------------------------------
 
     private void EnsurePlaceholder(string absolutePath)
     {
-        // Path.Exists works for both files and directories
         if (!Path.Exists(absolutePath)) return;
-
-        // Check if already a placeholder
         if (CfApi.IsPlaceholder(absolutePath)) return;
 
-        // Convert to placeholder (keeps content, adds reparse point metadata)
-        // FILE_FLAG_BACKUP_SEMANTICS in OpenFileHandle allows opening directories too
         using var handle = OpenFileHandle(absolutePath);
         if (handle is null) return;
 
@@ -358,7 +320,12 @@ public sealed class CloudSyncProvider : IOverlayStateStore
             _logger.LogDebug("CfConvertToPlaceholder failed: 0x{Hr:X8} for {Path}", hr, absolutePath);
     }
 
-    private void SetInSyncState(string absolutePath, bool inSync)
+    /// <summary>
+    /// Sets in-sync state and optionally pins the item.
+    /// Pinned + in-sync = green checkmark.
+    /// Unpinned + in-sync = no visible icon (suppresses sync arrows).
+    /// </summary>
+    private void SetInSyncState(string absolutePath, bool inSync, bool pin)
     {
         if (!Path.Exists(absolutePath)) return;
 
@@ -374,9 +341,7 @@ public sealed class CloudSyncProvider : IOverlayStateStore
         if (hr < 0)
             _logger.LogDebug("CfSetInSyncState failed: 0x{Hr:X8} for {Path}", hr, absolutePath);
 
-        // Pin as "always available on this device" so it shows a green checkmark
-        // instead of a blue cloud ("online-only")
-        if (inSync)
+        if (pin && inSync)
         {
             int pinHr = CfApi.CfSetPinState(
                 handle.DangerousGetHandle(),
@@ -387,23 +352,19 @@ public sealed class CloudSyncProvider : IOverlayStateStore
             if (pinHr < 0)
                 _logger.LogDebug("CfSetPinState failed: 0x{Hr:X8} for {Path}", pinHr, absolutePath);
         }
-    }
+        else if (!pin)
+        {
+            // Explicitly unpin — removes the green checkmark while keeping in-sync
+            // (suppresses the sync-arrows icon without showing a green checkmark)
+            int pinHr = CfApi.CfSetPinState(
+                handle.DangerousGetHandle(),
+                CfApi.CF_PIN_STATE_UNPINNED,
+                CfApi.CF_SET_PIN_FLAG_NONE,
+                IntPtr.Zero);
 
-    /// <summary>
-    /// Reverts a placeholder back to a normal file, removing all Cloud Files status icons.
-    /// </summary>
-    private void RevertPlaceholder(string absolutePath)
-    {
-        using var handle = OpenFileHandle(absolutePath);
-        if (handle is null) return;
-
-        int hr = CfApi.CfRevertPlaceholder(
-            handle.DangerousGetHandle(),
-            CfApi.CF_REVERT_FLAG_NONE,
-            IntPtr.Zero);
-
-        if (hr < 0)
-            _logger.LogDebug("CfRevertPlaceholder failed: 0x{Hr:X8} for {Path}", hr, absolutePath);
+            if (pinHr < 0)
+                _logger.LogDebug("CfSetPinState(UNPINNED) failed: 0x{Hr:X8} for {Path}", pinHr, absolutePath);
+        }
     }
 
     private static SafeFileHandle? OpenFileHandle(string path)
@@ -427,26 +388,18 @@ public sealed class CloudSyncProvider : IOverlayStateStore
 
     private static class CfApi
     {
-        // CfConvertToPlaceholder flags
         public const uint CF_CONVERT_FLAG_MARK_IN_SYNC = 0x00000001;
 
-        // CfSetInSyncState values
         public const uint CF_IN_SYNC_STATE_NOT_IN_SYNC = 0;
         public const uint CF_IN_SYNC_STATE_IN_SYNC = 1;
-
-        // CfSetInSyncState flags
         public const uint CF_SET_IN_SYNC_FLAG_NONE = 0;
 
-        // CfSetPinState values (from cfapi.h)
         public const uint CF_PIN_STATE_PINNED = 1;
         public const uint CF_PIN_STATE_UNPINNED = 2;
         public const uint CF_SET_PIN_FLAG_NONE = 0;
 
-        // CfConnectSyncRoot flags
         public const uint CF_CONNECT_FLAG_NONE = 0;
 
-        // CF_CALLBACK_TYPE sentinel (terminates callback registration array)
-        // Must be 0xffffffff per cfapi.h — wrong value causes AV as API reads past buffer
         public const uint CF_CALLBACK_TYPE_NONE = 0xffffffff;
 
         [StructLayout(LayoutKind.Sequential)]
@@ -456,10 +409,8 @@ public sealed class CloudSyncProvider : IOverlayStateStore
             public IntPtr Callback;
         }
 
-        // File attributes for placeholder check
-        public const uint FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x00400000;
+        public const uint FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400;
 
-        // CreateFileW constants
         public const uint FILE_WRITE_ATTRIBUTES = 0x100;
         public const uint FILE_SHARE_READ = 0x01;
         public const uint FILE_SHARE_WRITE = 0x02;
@@ -483,11 +434,8 @@ public sealed class CloudSyncProvider : IOverlayStateStore
             uint setInSyncFlags,
             out long usn);
 
-        // Overload without usn out param
         public static int CfSetInSyncState(IntPtr fileHandle, uint inSyncState, uint flags, IntPtr reserved)
-        {
-            return CfSetInSyncState(fileHandle, inSyncState, flags, out _);
-        }
+            => CfSetInSyncState(fileHandle, inSyncState, flags, out _);
 
         [DllImport("cldapi.dll", CharSet = CharSet.Unicode)]
         public static extern int CfSetPinState(
@@ -507,17 +455,6 @@ public sealed class CloudSyncProvider : IOverlayStateStore
         [DllImport("cldapi.dll")]
         public static extern int CfDisconnectSyncRoot(long connectionKey);
 
-        [DllImport("cldapi.dll", CharSet = CharSet.Unicode)]
-        public static extern int CfRevertPlaceholder(
-            IntPtr fileHandle,
-            uint revertFlags,
-            IntPtr overlapped);
-
-        public const uint CF_REVERT_FLAG_NONE = 0;
-
-        [DllImport("cldapi.dll", CharSet = CharSet.Unicode)]
-        public static extern int CfUnregisterSyncRoot(string syncRootPath);
-
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         public static extern SafeFileHandle CreateFileW(
             string lpFileName,
@@ -535,11 +472,7 @@ public sealed class CloudSyncProvider : IOverlayStateStore
         {
             uint attrs = GetFileAttributesW(path);
             if (attrs == 0xFFFFFFFF) return false;
-            // Cloud filter placeholders have a reparse point (IO_REPARSE_TAG_CLOUD = 0x9000601a).
-            // For AlwaysFull providers, RECALL_ON_DATA_ACCESS is NOT set — check ReparsePoint instead.
             return (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
         }
-
-        public const uint FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400;
     }
 }
