@@ -354,11 +354,10 @@ public sealed class CloudSyncProvider : IOverlayStateStore
         }
         else if (!pin)
         {
-            // Explicitly unpin — removes the green checkmark while keeping in-sync
-            // (suppresses the sync-arrows icon without showing a green checkmark)
+            // Mark as excluded from sync — may suppress the status icon entirely
             int pinHr = CfApi.CfSetPinState(
                 handle.DangerousGetHandle(),
-                CfApi.CF_PIN_STATE_UNPINNED,
+                CfApi.CF_PIN_STATE_EXCLUDED,
                 CfApi.CF_SET_PIN_FLAG_NONE,
                 IntPtr.Zero);
 
@@ -394,8 +393,10 @@ public sealed class CloudSyncProvider : IOverlayStateStore
         public const uint CF_IN_SYNC_STATE_IN_SYNC = 1;
         public const uint CF_SET_IN_SYNC_FLAG_NONE = 0;
 
+        public const uint CF_PIN_STATE_UNSPECIFIED = 0;
         public const uint CF_PIN_STATE_PINNED = 1;
         public const uint CF_PIN_STATE_UNPINNED = 2;
+        public const uint CF_PIN_STATE_EXCLUDED = 3;
         public const uint CF_SET_PIN_FLAG_NONE = 0;
 
         public const uint CF_CONNECT_FLAG_NONE = 0;
