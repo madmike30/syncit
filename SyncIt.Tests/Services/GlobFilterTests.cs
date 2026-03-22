@@ -78,10 +78,12 @@ public sealed class GlobFilterTests
     }
 
     [Fact]
-    public void IsExcluded_SelectedSubfolders_IncludesRootFiles()
+    public void IsExcluded_SelectedSubfolders_ExcludesRootFiles()
     {
+        // Root-level files outside selected subfolders should be excluded
+        // (Drive root is the base — only selected subfolders are synced)
         var pair = MakePair(selectedSubfolders: ["Projects"]);
-        _filter.IsExcluded("readme.txt", pair).Should().BeFalse();
+        _filter.IsExcluded("readme.txt", pair).Should().BeTrue();
     }
 
     [Fact]

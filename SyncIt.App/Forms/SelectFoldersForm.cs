@@ -1,12 +1,13 @@
 using System.Runtime.Versioning;
 using System.Text.Json;
-using SyncIt.Core.Ipc;
 using SyncIt.Core.Models;
+using SyncIt.Core.Services;
 
 namespace SyncIt.App.Forms;
 
 /// <summary>
-/// Lets the user browse and select which subfolders within a sync pair's Drive root to sync.
+/// Lets the user browse and select which subfolders within their Drive to sync.
+/// Uses lazy-loading (load children on expand) to handle large Drive accounts.
 /// Empty selection = sync everything (the default).
 /// </summary>
 [SupportedOSPlatform("windows")]
@@ -14,7 +15,7 @@ public sealed class SelectFoldersForm : Form
 {
     private readonly SyncPair _pair;
     private readonly string _configPath;
-    private readonly Task<SubfoldersResultPayload?> _loadTask;
+    private readonly IGoogleDriveService _driveService;
 
     private TreeView _tree = null!;
     private Label _statusLabel = null!;
@@ -22,16 +23,20 @@ public sealed class SelectFoldersForm : Form
     private Button _cancelButton = null!;
     private Button _selectAllButton = null!;
     private Button _clearButton = null!;
-    private Label _hintLabel = null!;
 
     // Prevents recursive AfterCheck cascades
     private bool _suppressCheckEvents;
 
-    public SelectFoldersForm(SyncPair pair, string configPath, Task<SubfoldersResultPayload?> loadTask)
+    private const string Placeholder = "__placeholder";
+
+    /// <summary>Stored in TreeNode.Tag to track both path and Drive ID.</summary>
+    private record FolderTag(string RelativePath, string DriveId);
+
+    public SelectFoldersForm(SyncPair pair, string configPath, IGoogleDriveService driveService)
     {
-        _pair       = pair;
-        _configPath = configPath;
-        _loadTask   = loadTask;
+        _pair         = pair;
+        _configPath   = configPath;
+        _driveService = driveService;
 
         InitializeComponent();
     }
@@ -52,7 +57,7 @@ public sealed class SelectFoldersForm : Form
         // --- Header ---
         var header = new Label
         {
-            Text      = $"Choose which folders in \"{_pair.RemoteFolderName}\" to sync.",
+            Text      = "Choose which Google Drive folders to sync.",
             Dock      = DockStyle.Top,
             AutoSize  = false,
             Height    = 28,
@@ -60,9 +65,9 @@ public sealed class SelectFoldersForm : Form
             Font      = new Font(Font.FontFamily, Font.Size, FontStyle.Bold),
         };
 
-        _hintLabel = new Label
+        var hintLabel = new Label
         {
-            Text    = "Files at the root of the Drive folder are always synced, regardless of selection.\n" +
+            Text    = "Check the folders you want to sync locally.\n" +
                       "Unchecked folders will not be downloaded or uploaded.",
             Dock    = DockStyle.Top,
             AutoSize = false,
@@ -85,8 +90,11 @@ public sealed class SelectFoldersForm : Form
             CheckBoxes = true,
             Visible    = false,
             HideSelection = false,
+            ShowLines     = true,
+            ShowPlusMinus = true,
         };
-        _tree.AfterCheck += OnAfterCheck;
+        _tree.AfterCheck  += OnAfterCheck;
+        _tree.BeforeExpand += OnBeforeExpand;
 
         var treePanel = new Panel { Dock = DockStyle.Fill };
         treePanel.Controls.Add(_tree);
@@ -151,7 +159,7 @@ public sealed class SelectFoldersForm : Form
         outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));   // ok/cancel
 
         outer.Controls.Add(header,       0, 0);
-        outer.Controls.Add(_hintLabel,   0, 1);
+        outer.Controls.Add(hintLabel,    0, 1);
         outer.Controls.Add(treePanel,    0, 2);
         outer.Controls.Add(quickPanel,   0, 3);
         outer.Controls.Add(okCancelPanel, 0, 4);
@@ -162,117 +170,122 @@ public sealed class SelectFoldersForm : Form
     }
 
     // -------------------------------------------------------------------------
-    // Load subfolders asynchronously once the form appears
+    // Load top-level folders on show
     // -------------------------------------------------------------------------
 
     protected override async void OnShown(EventArgs e)
     {
         base.OnShown(e);
-        await LoadAsync();
+        await LoadTopLevelAsync();
     }
 
-    private async Task LoadAsync()
+    private async Task LoadTopLevelAsync()
     {
         try
         {
-            // Wait up to 30 s for the service to respond
-            SubfoldersResultPayload? result = null;
-            try
-            {
-                result = await _loadTask.WaitAsync(TimeSpan.FromSeconds(30));
-            }
-            catch (TimeoutException)
-            {
-                _statusLabel.Text      = "Timed out waiting for folder list. Is the SyncIt service running?";
-                _statusLabel.ForeColor = Color.DarkRed;
-                return;
-            }
+            var subfolders = await _driveService.ListSubfoldersAsync(
+                _pair.RemoteFolderId, "", maxDepth: 1);
 
-            if (result is null)
+            if (subfolders.Count == 0)
             {
-                _statusLabel.Text      = "No response from the SyncIt service.";
-                _statusLabel.ForeColor = Color.DarkRed;
-                return;
-            }
-
-            if (result.Error is not null)
-            {
-                _statusLabel.Text      = $"Error: {result.Error}";
-                _statusLabel.ForeColor = Color.DarkRed;
-                return;
-            }
-
-            if (result.Subfolders.Count == 0)
-            {
-                _statusLabel.Text      = "No subfolders found in this Drive folder.\n" +
-                                         "All files at the root are always synced.";
+                _statusLabel.Text      = "No folders found in Google Drive.";
                 _statusLabel.ForeColor = Color.Gray;
                 _okButton.Enabled      = true;
                 return;
             }
 
-            PopulateTree(result.Subfolders);
-            _statusLabel.Visible    = false;
-            _tree.Visible           = true;
-            _okButton.Enabled       = true;
+            _tree.BeginUpdate();
+            foreach (var folder in subfolders.OrderBy(f => f.Name))
+            {
+                var node = new TreeNode(folder.Name)
+                {
+                    Tag = new FolderTag(folder.RelativePath, folder.DriveId),
+                };
+                // Add placeholder so [+] expand button appears
+                node.Nodes.Add(new TreeNode("Loading...") { Tag = Placeholder });
+
+                // Pre-check if this folder is in SelectedSubfolders
+                node.Checked = IsPathSelected(folder.RelativePath);
+
+                _tree.Nodes.Add(node);
+            }
+            _tree.EndUpdate();
+
+            _statusLabel.Visible     = false;
+            _tree.Visible            = true;
+            _okButton.Enabled        = true;
             _selectAllButton.Enabled = true;
-            _clearButton.Enabled    = true;
+            _clearButton.Enabled     = true;
         }
         catch (Exception ex)
         {
-            _statusLabel.Text      = $"Unexpected error: {ex.Message}";
+            _statusLabel.Text      = $"Error loading folders: {ex.Message}";
             _statusLabel.ForeColor = Color.DarkRed;
         }
     }
 
     // -------------------------------------------------------------------------
-    // Build TreeView from flat path list
+    // Lazy-load children on expand
     // -------------------------------------------------------------------------
 
-    private void PopulateTree(List<SubfolderEntry> entries)
+    private async void OnBeforeExpand(object? sender, TreeViewCancelEventArgs e)
     {
-        _tree.BeginUpdate();
-        _tree.Nodes.Clear();
+        if (e.Node is null) return;
 
-        // Map from relative path → TreeNode for efficient parent lookup
-        var nodeMap = new Dictionary<string, TreeNode>(StringComparer.OrdinalIgnoreCase);
-
-        // The service returns entries depth-first (parent before children)
-        foreach (var entry in entries)
+        // If the first child is a placeholder, load real children
+        if (e.Node.Nodes.Count == 1 && e.Node.Nodes[0].Tag as string == Placeholder)
         {
-            var node = new TreeNode(entry.Name) { Tag = entry.RelativePath };
+            if (e.Node.Tag is not FolderTag tag) return;
 
-            // Pre-check if this exact path (or a parent path) is in SelectedSubfolders
-            node.Checked = IsPathSelected(entry.RelativePath);
-
-            var slash = entry.RelativePath.LastIndexOf('/');
-            if (slash < 0)
+            try
             {
-                // Top-level folder
-                _tree.Nodes.Add(node);
-            }
-            else
-            {
-                var parentPath = entry.RelativePath[..slash];
-                if (nodeMap.TryGetValue(parentPath, out var parentNode))
-                    parentNode.Nodes.Add(node);
-                else
-                    _tree.Nodes.Add(node); // parent not in map (shouldn't happen)
-            }
+                e.Node.Nodes.Clear();
 
-            nodeMap[entry.RelativePath] = node;
+                var children = await _driveService.ListSubfoldersAsync(
+                    tag.DriveId, tag.RelativePath, maxDepth: 1);
+
+                if (children.Count == 0)
+                {
+                    e.Node.Nodes.Add(new TreeNode("(no subfolders)") { ForeColor = Color.Gray });
+                    return;
+                }
+
+                _suppressCheckEvents = true;
+                try
+                {
+                    foreach (var child in children.OrderBy(c => c.Name))
+                    {
+                        var childNode = new TreeNode(child.Name)
+                        {
+                            Tag     = new FolderTag(child.RelativePath, child.DriveId),
+                            Checked = e.Node.Checked || IsPathSelected(child.RelativePath),
+                        };
+                        childNode.Nodes.Add(new TreeNode("Loading...") { Tag = Placeholder });
+                        e.Node.Nodes.Add(childNode);
+                    }
+                }
+                finally
+                {
+                    _suppressCheckEvents = false;
+                }
+            }
+            catch (Exception ex)
+            {
+                e.Node.Nodes.Clear();
+                e.Node.Nodes.Add(new TreeNode($"Error: {ex.Message}") { ForeColor = Color.DarkRed });
+            }
         }
-
-        _tree.ExpandAll();
-        _tree.EndUpdate();
     }
+
+    // -------------------------------------------------------------------------
+    // Check helpers
+    // -------------------------------------------------------------------------
 
     private bool IsPathSelected(string relativePath)
     {
         foreach (var sf in _pair.SelectedSubfolders)
         {
             var prefix = sf.TrimEnd('/');
-            // Path equals a selected folder, or is inside one
             if (relativePath.Equals(prefix, StringComparison.OrdinalIgnoreCase) ||
                 relativePath.StartsWith(prefix + "/", StringComparison.OrdinalIgnoreCase))
                 return true;
@@ -291,11 +304,7 @@ public sealed class SelectFoldersForm : Form
         _suppressCheckEvents = true;
         try
         {
-            // Cascade to all descendants
             SetSubtreeChecked(e.Node, e.Node.Checked);
-
-            // If unchecked, also uncheck ancestors that were fully covering this node
-            // (leave ancestors that were explicitly selected for the path to still work)
         }
         finally
         {
@@ -307,6 +316,7 @@ public sealed class SelectFoldersForm : Form
     {
         foreach (TreeNode child in node.Nodes)
         {
+            if (child.Tag as string == Placeholder) continue;
             child.Checked = isChecked;
             SetSubtreeChecked(child, isChecked);
         }
@@ -342,7 +352,6 @@ public sealed class SelectFoldersForm : Form
 
     private void SaveToConfig()
     {
-        // Collect checked top-level paths (children of a checked parent are redundant)
         var selected = new List<string>();
         CollectMinimalCheckedPaths(_tree.Nodes, selected);
 
@@ -384,9 +393,11 @@ public sealed class SelectFoldersForm : Form
     {
         foreach (TreeNode node in nodes)
         {
-            if (node.Checked && node.Tag is string path)
+            if (node.Tag as string == Placeholder) continue;
+
+            if (node.Checked && node.Tag is FolderTag tag)
             {
-                result.Add(path);
+                result.Add(tag.RelativePath);
                 // Don't descend — children are covered by the parent
             }
             else

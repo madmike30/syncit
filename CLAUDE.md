@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-SyncIt is a Windows Google Drive sync application (like OneDrive/Google Drive desktop). It runs as a single-process WinForms app with a system tray icon, background sync engines, and a dashboard UI.
+SyncIt is a Windows Google Drive sync application (like OneDrive/Google Drive desktop). It runs as a single-process WinForms app with a system tray icon, background sync engines, and a dashboard UI. Users pick a local root folder (e.g. `C:\Users${1}You${2}My Drive`) and select which Google Drive folders to sync under it — similar to Google Drive Desktop's selective sync.
 
 ## Tech Stack
 
@@ -19,7 +19,7 @@ SyncIt is a Windows Google Drive sync application (like OneDrive/Google Drive de
 ```
 SyncIt.App/          — WinForms entry point, tray icon, dashboard UI, forms
   SyncItApp.cs       — Main ApplicationContext: owns tray icon + sync engines
-  Forms/             — DashboardForm, FirstRunForm, AccountForm, DriveFolderPickerForm, etc.
+  Forms/             — DashboardForm, FirstRunForm, AccountForm, SelectFoldersForm, etc.
 SyncIt.Core/         — All sync logic (no UI dependency)
   Services/          — SyncEngine, GoogleDriveService, ChangeQueue, DeletionCoordinator, etc.
   Safety/            — DeletionSafetyValidator, DeletionJournal (3-layer deletion safety)
@@ -34,6 +34,9 @@ SyncIt.Tests/        — xUnit test project
 ### Single-process architecture
 No separate service/tray processes. SyncIt.App runs sync engines on background threads and the tray icon on the UI thread. Previous SyncIt.Service and SyncIt.Tray projects were removed.
 
+### Selective folder sync (Google Drive Desktop model)
+The sync root is always Google Drive root (`"root"` alias). Users select which Drive folders to sync via `SelectFoldersForm` (checkbox tree with lazy-loading). Selected folders are stored in `SyncPair.SelectedSubfolders`. Empty list = sync everything. `GlobFilter` enforces the selection — files outside selected subfolders are excluded from all sync operations (initial sync, reconciliation, poll, FSW events).
+
 ### Deletion safety pipeline (3 layers)
 1. **Baseline validation** — only delete files with known sync history
 2. **Threshold freeze** — if >50 pending deletions, freeze ALL and require user approval via dialog
@@ -43,11 +46,22 @@ No separate service/tray processes. SyncIt.App runs sync engines on background t
 After uploading, the Changes API echoes the change back. `DriveRevisionId` comparison prevents re-downloading our own uploads.
 
 ### Google Docs handling
-Google Apps files (Docs, Sheets, etc.) use Export API, not Download. `GoogleDocExportMap` maps MIME types to export formats. Non-exportable types (shortcuts, forms, maps) are skipped.
+Google Apps files (Docs, Sheets, etc.) use Export API, not Download. `GoogleDocExportMap` maps MIME types to export formats. Non-exportable types (shortcuts, forms, maps) are skipped. Google Apps files have no `md5Checksum` — `HandleBothExistAsync` detects this and records baselines without hash comparison to avoid false conflicts on every restart.
 
 ### Change detection
 - **Local**: FileSystemWatcher → ChangeQueue (500ms debounce) → consumer task
 - **Remote**: Polling via Drive Changes API with page tokens (default 30s interval)
+
+### Initial sync & reconciliation
+- **Initial sync** (no baselines): Lists remote files via `ListFilesWithPathsAsync` (builds paths during traversal — no extra API calls per file), compares against local files. Both-exist → hash compare, local-only → upload, remote-only → download. Uses `Parallel.ForEachAsync` with concurrency 8.
+- **Reconciliation** (has baselines): Checks baselines against local filesystem. Missing files → deletion events, modified files → change events. New files without baselines (e.g. newly added subfolder) go through `ReconcileNewFilesViaInitialSyncAsync` which lists remote files first to avoid blind re-uploads.
+
+### Memory optimization
+- Workstation GC with concurrent collection (client app, not server)
+- Periodic GC.Collect when idle (every 5 min)
+- `TransferTracker.ActiveTransfers` returns dict values directly instead of `.ToList()`
+- `FailedOperationTracker` caches counts instead of enumerating on every query
+- `StopEnginesAsync` snapshots engine lists to avoid "collection modified" during shutdown
 
 ## Build & Run
 
@@ -70,7 +84,9 @@ The `SyncIt.vbs` script launches `publish/SyncIt.exe` silently. `SyncIt.bat` als
 ## Configuration
 
 Config lives at `%APPDATA%\SyncIt\syncit.json`. Key settings:
-- `syncPairs` — array of `{ id, localPath, remoteFolderId, remoteFolderName }`
+- `syncPairs` — array of `{ id, localPath, remoteFolderId, remoteFolderName, selectedSubfolders }`
+- `remoteFolderId` — always `"root"` (Google Drive root); auto-migrated from old specific folder IDs
+- `selectedSubfolders` — list of folder paths to sync (empty = sync all)
 - `pollIntervalSeconds` — remote polling interval (default 30)
 - `maxDeletionsPerCycle` — freeze threshold (default 50)
 - `deletionGraceCycles` — wait cycles before executing delete (default 2)
@@ -92,13 +108,21 @@ Config lives at `%APPDATA%\SyncIt\syncit.json`. Key settings:
 ## Important Patterns
 
 ### SyncEngine lifecycle
-`StartAsync` → safety check → cancel stale frozen deletions → ensure page token → **validate remote folder access** → setup FSW → initial sync (if no baseline) → start consumer task + poll loop concurrently. Initial sync uses `Parallel.ForEachAsync` with bounded concurrency (4) for uploads, downloads, and hash comparisons.
+`StartAsync` → safety check → cancel stale frozen deletions → ensure page token → **validate remote folder access** → setup FSW → initial sync (if no baseline) or reconciliation (if baselines exist) → start consumer task + poll loop concurrently. Initial sync uses `Parallel.ForEachAsync` with bounded concurrency (8) for uploads, downloads, and hash comparisons.
+
+### Selective folder sync flow
+1. User opens Dashboard → clicks "Select folders" → `SelectFoldersForm` opens
+2. Form loads top-level Drive folders via `ListSubfoldersAsync(root, maxDepth:1)` (lazy-loading)
+3. Expanding a node loads its children on-demand via `BeforeExpand` event
+4. On OK: saves `SelectedSubfolders` to config → ConfigWatcher fires → engines restart
+5. `GlobFilter.IsExcluded` checks `SelectedSubfolders` — files must be inside (or parent of) a selected subfolder
+6. Initial sync only lists files from selected subfolders, not entire Drive
 
 ### File change flow (local → remote)
-FSW event → `OnLocalChange` → filter (glob, size, lock check) → `ChangeQueue.Enqueue` → 500ms debounce → `ConsumeChangesAsync` → `HandleLocalChangeAsync` (conflict check → upload) or `HandleLocalDeleteAsync` (→ DeletionCoordinator).
+FSW event → `OnLocalChange` → filter (glob, size, lock check) → `ChangeQueue.Enqueue` → 500ms debounce → `ConsumeChangesAsync` → glob filter check → `HandleLocalChangeAsync` (conflict check → upload) or `HandleLocalDeleteAsync` (→ DeletionCoordinator).
 
 ### File change flow (remote → local)
-Poll timer → `RunSyncCycleAsync` → `ListChangesAsync` → `GetRelativePathAsync` (parent walk to root folder) → `HandleRemoteChangeAsync` (echo check → rename detection → conflict check → download) or `HandleRemoteDeleteAsync` (conflict check → DeletionCoordinator).
+Poll timer → `RunSyncCycleAsync` → `ListChangesAsync` → `GetRelativePathAsync` (parent walk to root folder) → glob filter check → `HandleRemoteChangeAsync` (echo check → rename detection → conflict check → download) or `HandleRemoteDeleteAsync` (conflict check → DeletionCoordinator).
 
 ### Conflict resolution
 When both local and remote changed since baseline: `ConflictResolver` applies the configured strategy (default: `RemoteWins`). Options: `LocalWins`, `RemoteWins`, `KeepBoth` (renames local with `.conflict` suffix), `NoConflict`.
@@ -106,8 +130,13 @@ When both local and remote changed since baseline: `ConflictResolver` applies th
 ### Account switching & state DB lifecycle
 `SwitchAccountAsync` in SyncItApp: stop engines → delete token → re-authorize (with account picker) → dispose old DriveService → **reset all state DBs** (state.db, delete-journal.db, activity.db) via `SqliteConnection.ClearAllPools()` + file deletion → validate new account's access to configured Drive folder → recreate ActivityLog + CloudSyncProvider → restart engines. State DBs are also reset when the Drive folder changes (config watcher detects `RemoteFolderId` change).
 
-### Path resolution safety
-`GetRelativePathAsync` walks parent chain from file to `rootFolderId` using `DriveFolderCache` for fast resolution. `RunSyncCycleAsync` rejects any path starting with `My Drive/` as a safety net against cache pollution from the Changes API (which returns changes across all of Drive, not just the sync folder).
+### Path resolution
+- **Fast path** (`ListFilesWithPathsAsync`): Builds relative paths during folder traversal — no per-file API calls. Used for initial sync and reconciliation of new folders. 40x faster than `GetRelativePathAsync` for bulk listing.
+- **API path** (`GetRelativePathAsync`): Walks parent chain from file to `rootFolderId` using `DriveFolderCache`. Used for poll-cycle changes where individual file paths are needed. Resolves `"root"` alias to actual Drive root ID automatically.
+- **Safety**: `RunSyncCycleAsync` rejects any path starting with `My Drive/` as a safety net against cache pollution from the Changes API.
+
+### Activity log session filtering
+Dashboard activity list only shows entries from the current session (`_sessionStartUtc`). The full Activity History form shows all historical records.
 
 ## Live Smoke Tests
 
@@ -150,10 +179,15 @@ Run each test sequentially, waiting ~35s between tests for a full poll cycle. Ve
 
 - **SyncIt.exe must be killed before rebuilding** — the DLL gets locked. Use `taskkill //IM SyncIt.exe //F`.
 - **State reset for clean sync**: delete `state.db`, `delete-journal.db`, `activity.db` in AppData. This forces a fresh initial sync on next launch.
-- **Google Apps MIME types** (`application/vnd.google-apps.*`) cannot be downloaded via `DownloadFileAsync` — they must use Export API or be skipped. Binary download throws "Only files with binary content can be downloaded."
+- **Google Apps MIME types** (`application/vnd.google-apps.*`) cannot be downloaded via `DownloadFileAsync` — they must use Export API or be skipped. Binary download throws "Only files with binary content can be downloaded." Google Apps files have `md5Checksum = null` — always handle this in hash comparisons.
+- **Google Drive "root" alias**: `"root"` is a special alias for My Drive root, but the actual folder ID is a different string. `GetRelativePathAsync` must resolve `"root"` to the real ID via `GetFileAsync("root")` before parent chain comparison. Cached in `_resolvedRootId`.
 - **Path resolution**: `GetRelativePathAsync` walks the parent chain from a file up to `rootFolderId`. It returns `null` for files outside the sync tree or for the root folder itself.
+- **ListFilesWithPathsAsync vs GetRelativePathAsync**: For bulk listing (initial sync, reconciliation), always use `ListFilesWithPathsAsync` which builds paths during traversal. `GetRelativePathAsync` makes an API call per file and is 40x slower for bulk operations. Use it only for individual file path resolution during poll cycles.
 - **FSW needs `NotifyFilters.DirectoryName`** for folder create/delete/rename events — without it, only file events fire.
 - **Empty folders must be synced**: `ListFilesAsync` must yield folder entries (not just recurse into them), and `InitialSyncAsync` must enumerate local directories separately from files. `DownloadRemoteFileAsync` handles folders via `Directory.CreateDirectory`.
+- **Top-level selected folder not in remoteFiles**: `ListFilesWithPathsAsync` starts listing from *inside* a folder, so the folder itself isn't yielded. Must manually add selected subfolder entries to `remoteFiles` dict to avoid phantom "FolderCreated" activity.
+- **Reconciliation blind upload trap**: When a new subfolder is added to `SelectedSubfolders`, its files have no baselines. Naive reconciliation would queue all as "Created" → blind upload. `ReconcileNewFilesViaInitialSyncAsync` lists remote files first and runs `HandleBothExistAsync` for matches.
+- **SelectedSubfolders GlobFilter**: The filter must check all items, not just nested paths. A root-level bypass (e.g. `path.Contains('/')`) causes ALL local root folders to sync. The filter checks: `path starts with prefix`, `path equals prefix`, OR `prefix starts with path` (for parent directories of selected folders).
 - **Cloud Files pin state constants**: `CF_PIN_STATE_PINNED = 1`, NOT 2 (which is `UNPINNED`). Getting this wrong causes folders to show blue cloud icons instead of green checkmarks.
 - **Cloud Files overlay for folders**: Both `SetInSyncState` AND `CfSetPinState(PINNED)` must be called for items to show green checkmarks. `CfConvertToPlaceholder` with `CF_CONVERT_FLAG_MARK_IN_SYNC` alone is not sufficient — items still need to be pinned.
 - **FolderBrowserDialog hangs on UI thread**: The COM-based dialog can deadlock with the WinForms message pump. Run it on a dedicated STA thread with `thread.SetApartmentState(ApartmentState.STA)`.
@@ -162,3 +196,4 @@ Run each test sequentially, waiting ~35s between tests for a full poll cycle. Ve
 - **SQLite connection pooling**: `Microsoft.Data.Sqlite` pools connections internally. Call `SqliteConnection.ClearAllPools()` before deleting `.db` files, otherwise you get "file in use" errors even after disposing all store objects.
 - **DriveFolderCache pollution**: The Changes API returns changes across ALL of Google Drive, not just the sync folder. Folder entries from changes outside the sync tree can pollute the cache, causing `GetRelativePathAsync` to resolve paths like `My Drive/folder/file.txt` instead of just `file.txt`. The `My Drive/` path rejection in `RunSyncCycleAsync` is a safety net for this.
 - **Config watcher stale captures**: Event handler lambdas in `ConfigReloaded` must use instance fields (`_driveService`, `_engineCts.Token`) rather than captured locals from the startup scope. After account switch, the original captured references are stale/cancelled.
+- **StopEnginesAsync collection modified**: The `_engines` list can be modified concurrently during shutdown. Always snapshot to a local array before iterating.

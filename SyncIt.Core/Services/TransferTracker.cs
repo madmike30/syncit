@@ -13,7 +13,7 @@ public sealed class TransferTracker
 
     public event Action<FileTransferProgress>? ProgressChanged;
 
-    public IReadOnlyCollection<FileTransferProgress> ActiveTransfers => _active.Values.ToList();
+    public IReadOnlyList<FileTransferProgress> ActiveTransfers => _active.Values.ToArray();
 
     /// <summary>
     /// Begin tracking a file transfer. Returns an IProgress that updates BytesTransferred.

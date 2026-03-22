@@ -63,6 +63,9 @@ public sealed class SyncItApp : ApplicationContext
     private readonly List<string> _recentActivity = new();
     private DateTime _lastTransferPush = DateTime.MinValue;
 
+    // Session start time — used to filter activity list to current session
+    private readonly DateTime _sessionStartUtc = DateTime.UtcNow;
+
     // Account info cache
     private DriveAccountInfo? _accountInfo;
     private DateTime _lastAccountFetch = DateTime.MinValue;
@@ -297,16 +300,20 @@ public sealed class SyncItApp : ApplicationContext
 
     private async Task StopEnginesAsync()
     {
+        // Snapshot to avoid "Collection was modified" during concurrent access
+        var engines = _engines.ToArray();
+        var coordinators = _deletionCoordinators.ToArray();
+
         // Unsubscribe event handlers BEFORE disposing to prevent leaks
-        foreach (var engine in _engines)
+        foreach (var engine in engines)
         {
             engine.StatusChanged -= OnEngineStatusChanged;
             engine.TransferTracker.ProgressChanged -= OnTransferProgress;
         }
-        foreach (var coord in _deletionCoordinators)
+        foreach (var coord in coordinators)
             coord.DeletionFreezeTriggered -= OnDeletionFreezeTriggered;
 
-        foreach (var engine in _engines)
+        foreach (var engine in engines)
         {
             try { await engine.DisposeAsync(); }
             catch (Exception ex) { _logger.LogWarning(ex, "Error stopping engine."); }
@@ -321,9 +328,11 @@ public sealed class SyncItApp : ApplicationContext
 
     private async Task StatusPushLoopAsync(CancellationToken ct)
     {
+        int loopCount = 0;
         while (!ct.IsCancellationRequested)
         {
             await Task.Delay(TimeSpan.FromSeconds(10), ct);
+            loopCount++;
 
             // Refresh account info every 5 minutes
             if (_driveService is not null &&
@@ -341,6 +350,17 @@ public sealed class SyncItApp : ApplicationContext
             }
 
             PushStatus();
+
+            // Every 5 minutes when idle: trim working set and collect Gen2
+            if (loopCount % 30 == 0)
+            {
+                var isIdle = _engines.All(e => e.GetStatus().State == SyncState.Idle);
+                if (isIdle)
+                {
+                    GC.Collect(2, GCCollectionMode.Optimized, blocking: false);
+                    GC.WaitForPendingFinalizers();
+                }
+            }
         }
     }
 
@@ -484,11 +504,12 @@ public sealed class SyncItApp : ApplicationContext
                 PushStatus();
             },
             isPaused:         () => _globalPaused,
-            fetchActivity:    async () => _activityLog is null ? null : await _activityLog.GetRecentAsync(200),
+            fetchActivity:    async () => _activityLog is null ? null : await _activityLog.GetRecentAsync(200, sinceUtc: _sessionStartUtc),
             changeSyncFolder: pairId => ChangeSyncFolder(pairId),
             openSyncFolder:   () => OpenSyncFolder(),
             showAccountForm:  () => ShowAccountForm(),
-            selectSubfolders:  pairId => SelectSubfolders(pairId)
+            selectSubfolders:  pairId => SelectSubfolders(pairId),
+            fetchAllActivity: async () => _activityLog is null ? null : await _activityLog.GetRecentAsync(500)
         );
         _dashboard.FormClosed += (_, _) => _dashboard = null;
         _dashboard.Show();
@@ -604,30 +625,7 @@ public sealed class SyncItApp : ApplicationContext
         var pair = _config.SyncPairs.FirstOrDefault(p => p.Id == pairId);
         if (pair is null) return;
 
-        var driveService = _driveService;
-        var loadTask = Task.Run<SubfoldersResultPayload?>(async () =>
-        {
-            try
-            {
-                var folders = await driveService.ListSubfoldersAsync(pair.RemoteFolderId);
-                return new SubfoldersResultPayload
-                {
-                    SyncPairId = pair.Id,
-                    Subfolders = folders.Select(f => new SubfolderEntry
-                    {
-                        Name         = f.Name,
-                        RelativePath = f.RelativePath,
-                        DriveId      = f.DriveId,
-                    }).ToList(),
-                };
-            }
-            catch (Exception ex)
-            {
-                return new SubfoldersResultPayload { SyncPairId = pair.Id, Error = ex.Message };
-            }
-        });
-
-        using var form = new SelectFoldersForm(pair, ConfigPath, loadTask);
+        using var form = new SelectFoldersForm(pair, ConfigPath, _driveService);
         form.ShowDialog();
     }
 

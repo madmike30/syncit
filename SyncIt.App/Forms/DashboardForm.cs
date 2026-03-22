@@ -33,6 +33,7 @@ public sealed class DashboardForm : Form
     private readonly Action _pauseResume;
     private readonly Func<bool> _isPaused;
     private readonly Func<Task<List<ActivityRecord>?>> _fetchActivity;
+    private readonly Func<Task<List<ActivityRecord>?>> _fetchAllActivity;
     private readonly Action<string> _changeSyncFolder;       // pairId
     private readonly Action<string> _selectSubfolders;      // pairId
     private readonly Action _openSyncFolder;
@@ -61,7 +62,8 @@ public sealed class DashboardForm : Form
         Action<string> changeSyncFolder,
         Action openSyncFolder,
         Action? showAccountForm = null,
-        Action<string>? selectSubfolders = null)
+        Action<string>? selectSubfolders = null,
+        Func<Task<List<ActivityRecord>?>>? fetchAllActivity = null)
     {
         _getStatus        = getStatus;
         _getTransfers     = getTransfers;
@@ -69,6 +71,7 @@ public sealed class DashboardForm : Form
         _pauseResume      = pauseResume;
         _isPaused         = isPaused;
         _fetchActivity    = fetchActivity;
+        _fetchAllActivity = fetchAllActivity ?? fetchActivity;
         _changeSyncFolder = changeSyncFolder;
         _selectSubfolders  = selectSubfolders ?? (_ => { });
         _openSyncFolder   = openSyncFolder;
@@ -256,7 +259,7 @@ public sealed class DashboardForm : Form
 
         bottomPanel.Controls.Add(MakeLinkLabel("Activity History", () =>
         {
-            using var form = new ActivityHistoryForm(_fetchActivity);
+            using var form = new ActivityHistoryForm(_fetchAllActivity);
             form.ShowDialog(this);
         }));
         bottomPanel.Controls.Add(MakeLinkLabel("Open Logs", () =>

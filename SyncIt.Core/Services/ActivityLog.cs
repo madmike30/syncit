@@ -13,7 +13,7 @@ public interface IActivityLog : IDisposable
 {
     Task InitializeAsync(CancellationToken ct = default);
     Task RecordAsync(ActivityRecord record, CancellationToken ct = default);
-    Task<List<ActivityRecord>> GetRecentAsync(int limit = 100, string? syncPairId = null, CancellationToken ct = default);
+    Task<List<ActivityRecord>> GetRecentAsync(int limit = 100, string? syncPairId = null, DateTime? sinceUtc = null, CancellationToken ct = default);
     Task PruneAsync(int maxAgeDays = 30, CancellationToken ct = default);
 }
 
@@ -85,20 +85,26 @@ public sealed class ActivityLog : IActivityLog
     public async Task<List<ActivityRecord>> GetRecentAsync(
         int limit = 100,
         string? syncPairId = null,
+        DateTime? sinceUtc = null,
         CancellationToken ct = default)
     {
         await using var conn = await OpenAsync(ct);
         await using var cmd = conn.CreateCommand();
 
+        var where = new List<string>();
         if (syncPairId is not null)
         {
-            cmd.CommandText = "SELECT * FROM activity_records WHERE sync_pair_id=@pair ORDER BY timestamp_utc DESC LIMIT @limit";
+            where.Add("sync_pair_id=@pair");
             cmd.Parameters.AddWithValue("@pair", syncPairId);
         }
-        else
+        if (sinceUtc is not null)
         {
-            cmd.CommandText = "SELECT * FROM activity_records ORDER BY timestamp_utc DESC LIMIT @limit";
+            where.Add("timestamp_utc>=@since");
+            cmd.Parameters.AddWithValue("@since", sinceUtc.Value.ToString("O"));
         }
+
+        var whereClause = where.Count > 0 ? " WHERE " + string.Join(" AND ", where) : "";
+        cmd.CommandText = $"SELECT * FROM activity_records{whereClause} ORDER BY timestamp_utc DESC LIMIT @limit";
         cmd.Parameters.AddWithValue("@limit", limit);
 
         // Column order: id(0), sync_pair_id(1), type(2), relative_path(3), size_bytes(4), timestamp_utc(5), details(6)

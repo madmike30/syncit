@@ -373,6 +373,10 @@ public sealed class SyncEngine : ISyncEngine
 
             try
             {
+                // Skip changes for files outside the current SelectedSubfolders filter
+                if (change.Side == SyncSide.Local && !_globFilter.IsIncluded(change.RelativePath, pair))
+                    continue;
+
                 SetState(SyncState.Syncing, $"{change.Kind}: {change.RelativePath}");
 
                 if (change.Kind == ChangeKind.Deleted)
@@ -488,15 +492,53 @@ public sealed class SyncEngine : ISyncEngine
     private async Task InitialSyncAsync(SyncPair pair, CancellationToken ct)
     {
         _logger.LogInformation("Running initial sync for pair '{Id}'...", pair.Id);
-        const int maxConcurrency = 4;
+        const int maxConcurrency = 8;
 
         // Collect remote files into a dictionary for O(1) lookup
         var remoteFiles = new Dictionary<string, Google.Apis.Drive.v3.Data.File>(StringComparer.OrdinalIgnoreCase);
-        await foreach (var file in _driveService.ListFilesAsync(pair.RemoteFolderId, ct))
+
+        if (pair.SelectedSubfolders.Count > 0)
         {
-            var rel = await _driveService.GetRelativePathAsync(file.Id, pair.RemoteFolderId, ct);
-            if (rel is not null && _globFilter.IsIncluded(rel, pair))
-                remoteFiles[rel] = file;
+            // Optimization: only list files from selected subfolders instead of entire Drive root.
+            // Find the Drive ID of each selected subfolder, then list files from it.
+            var topLevelFolders = await _driveService.ListSubfoldersAsync(pair.RemoteFolderId, "", maxDepth: 1, ct: ct);
+
+            foreach (var selectedFolder in pair.SelectedSubfolders)
+            {
+                // Match the selected subfolder name to a top-level Drive folder
+                var topName = selectedFolder.Contains('/') ? selectedFolder[..selectedFolder.IndexOf('/')] : selectedFolder;
+                var match = topLevelFolders.FirstOrDefault(f =>
+                    f.Name.Equals(topName, StringComparison.OrdinalIgnoreCase));
+
+                if (match is null)
+                {
+                    _logger.LogWarning("Selected subfolder '{Folder}' not found in Drive root — skipping.", selectedFolder);
+                    continue;
+                }
+
+                // Add the top-level folder itself (ListFilesWithPathsAsync lists from inside it)
+                remoteFiles[match.Name] = new DriveFile
+                {
+                    Id = match.DriveId, Name = match.Name,
+                    MimeType = "application/vnd.google-apps.folder",
+                };
+
+                // List all files recursively with paths built during traversal (no extra API calls)
+                await foreach (var (file, rel) in _driveService.ListFilesWithPathsAsync(match.DriveId, match.Name, ct))
+                {
+                    if (_globFilter.IsIncluded(rel, pair))
+                        remoteFiles[rel] = file;
+                }
+            }
+        }
+        else
+        {
+            // No subfolder selection — list everything from the remote root
+            await foreach (var (file, rel) in _driveService.ListFilesWithPathsAsync(pair.RemoteFolderId, "", ct))
+            {
+                if (_globFilter.IsIncluded(rel, pair))
+                    remoteFiles[rel] = file;
+            }
         }
 
         _logger.LogInformation("Initial sync: found {Remote} remote files for pair '{Id}'.", remoteFiles.Count, pair.Id);
@@ -519,11 +561,21 @@ public sealed class SyncEngine : ISyncEngine
                 toUpload.Add((absPath, rel));
         }
 
-        // Process local directories (ensure empty folders are created on Drive) — sequential (folder creation order matters)
+        // Process local directories — only create on Drive if they don't already exist remotely.
+        // Also add the top-level selected subfolders themselves to remoteFiles (they aren't yielded
+        // by ListFilesWithPathsAsync since it lists from inside them).
         foreach (var absDir in Directory.EnumerateDirectories(pair.LocalPath, "*", SearchOption.AllDirectories))
         {
             var rel = TryMakeRelative(pair.LocalPath, absDir);
             if (rel is null || !_globFilter.IsIncluded(rel, pair)) continue;
+
+            // Skip directories not under any selected subfolder
+            if (pair.SelectedSubfolders.Count > 0 && !pair.SelectedSubfolders.Any(sf =>
+                rel.Equals(sf, StringComparison.OrdinalIgnoreCase) ||
+                rel.StartsWith(sf + "/", StringComparison.OrdinalIgnoreCase) ||
+                sf.StartsWith(rel + "/", StringComparison.OrdinalIgnoreCase)))
+                continue;
+
             localFiles.Add(rel);
 
             if (!remoteFiles.ContainsKey(rel))
@@ -595,6 +647,10 @@ public sealed class SyncEngine : ISyncEngine
         await foreach (var rec in _stateStore.StreamRecordsAsync(pair.Id, SyncSide.Local, ct))
         {
             if (rec.IsDeleted) continue;
+
+            // Skip baselines for files outside the current SelectedSubfolders filter
+            if (!_globFilter.IsIncluded(rec.RelativePath, pair)) continue;
+
             baselinePaths.Add(rec.RelativePath);
 
             var absPath = PathHelper.ToAbsolute(pair.LocalPath, rec.RelativePath);
@@ -629,7 +685,10 @@ public sealed class SyncEngine : ISyncEngine
             }
         }
 
-        // 2. Check for new local files not in baseline
+        // 2. Check for new local files not in baseline.
+        // Instead of blindly uploading, run through initial-sync logic (check Drive first)
+        // to avoid re-uploading files that already exist remotely (e.g. newly added subfolder).
+        var newLocalFiles = new List<(string absPath, string rel)>();
         if (Directory.Exists(pair.LocalPath))
         {
             foreach (var absPath in Directory.EnumerateFiles(pair.LocalPath, "*", SearchOption.AllDirectories))
@@ -645,23 +704,123 @@ public sealed class SyncEngine : ISyncEngine
                 }
                 catch { continue; }
 
-                _changeQueue.Enqueue(new ChangeEvent
-                {
-                    SyncPairId   = pair.Id,
-                    Side         = SyncSide.Local,
-                    Kind         = ChangeKind.Created,
-                    RelativePath = rel,
-                });
-                created++;
+                newLocalFiles.Add((absPath, rel));
             }
         }
 
-        if (deleted + modified + created > 0)
+        if (deleted + modified > 0)
             _logger.LogInformation(
-                "Reconciliation found {Del} deleted, {Mod} modified, {New} new files for pair '{Id}'.",
-                deleted, modified, created, pair.Id);
-        else
+                "Reconciliation found {Del} deleted, {Mod} modified for pair '{Id}'.",
+                deleted, modified, pair.Id);
+
+        if (newLocalFiles.Count > 0)
+        {
+            // Run a mini initial sync for these files: list remote counterparts,
+            // hash-compare if both exist, only upload truly new files.
+            _logger.LogInformation(
+                "Reconciliation found {New} new local files for pair '{Id}' — running initial sync for them.",
+                newLocalFiles.Count, pair.Id);
+            await ReconcileNewFilesViaInitialSyncAsync(pair, newLocalFiles, ct);
+        }
+        else if (deleted + modified == 0)
+        {
             _logger.LogDebug("Reconciliation: no local changes detected for pair '{Id}'.", pair.Id);
+        }
+    }
+
+    /// <summary>
+    /// For files found locally with no baseline, check Drive before uploading.
+    /// This handles the case where a new subfolder is added to SelectedSubfolders —
+    /// files exist on both sides but have no baselines yet.
+    /// </summary>
+    private async Task ReconcileNewFilesViaInitialSyncAsync(
+        SyncPair pair,
+        List<(string absPath, string rel)> newLocalFiles,
+        CancellationToken ct)
+    {
+        const int maxConcurrency = 8;
+
+        // Determine which subfolders contain new files and list remote files for them
+        var remoteFiles = new Dictionary<string, DriveFile>(StringComparer.OrdinalIgnoreCase);
+        var subfoldersToList = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (_, rel) in newLocalFiles)
+        {
+            var topFolder = rel.Contains('/') ? rel[..rel.IndexOf('/')] : rel;
+            subfoldersToList.Add(topFolder);
+        }
+
+        // List remote files for the relevant subfolders (using fast path-building traversal)
+        var topLevelFolders = await _driveService.ListSubfoldersAsync(pair.RemoteFolderId, "", maxDepth: 1, ct: ct);
+        foreach (var folderName in subfoldersToList)
+        {
+            var match = topLevelFolders.FirstOrDefault(f =>
+                f.Name.Equals(folderName, StringComparison.OrdinalIgnoreCase));
+            if (match is null) continue;
+
+            // Add the top-level folder itself
+            remoteFiles[match.Name] = new DriveFile
+            {
+                Id = match.DriveId, Name = match.Name,
+                MimeType = "application/vnd.google-apps.folder",
+            };
+
+            await foreach (var (file, rel) in _driveService.ListFilesWithPathsAsync(match.DriveId, match.Name, ct))
+            {
+                if (_globFilter.IsIncluded(rel, pair))
+                    remoteFiles[rel] = file;
+            }
+        }
+
+        _logger.LogInformation("Reconciliation: found {Remote} remote files for comparison.", remoteFiles.Count);
+
+        // Categorize: both-exist vs upload-only
+        var toBothExist = new List<(string absPath, string rel, DriveFile remoteFile)>();
+        var toUpload = new List<(string absPath, string rel)>();
+
+        foreach (var (absPath, rel) in newLocalFiles)
+        {
+            if (remoteFiles.TryGetValue(rel, out var remoteFile))
+                toBothExist.Add((absPath, rel, remoteFile));
+            else
+                toUpload.Add((absPath, rel));
+        }
+
+        _logger.LogInformation("Reconciliation: {Both} files exist on both sides, {Upload} local-only.",
+            toBothExist.Count, toUpload.Count);
+
+        // Process both-exist (hash compare, parallel)
+        await Parallel.ForEachAsync(toBothExist,
+            new ParallelOptions { MaxDegreeOfParallelism = maxConcurrency, CancellationToken = ct },
+            async (item, token) => await HandleBothExistAsync(item.rel, item.absPath, item.remoteFile, pair, token));
+
+        // Upload truly new files (parallel)
+        await Parallel.ForEachAsync(toUpload,
+            new ParallelOptions { MaxDegreeOfParallelism = maxConcurrency, CancellationToken = ct },
+            async (item, token) => await UploadLocalFileAsync(item.absPath, item.rel, pair, token));
+
+        // Download remote-only files (files on Drive but not locally)
+        var localRels = new HashSet<string>(newLocalFiles.Select(f => f.rel), StringComparer.OrdinalIgnoreCase);
+        var toDownload = remoteFiles.Where(r => !localRels.Contains(r.Key))
+            .Where(r => !newLocalFiles.Any(f => f.rel.Equals(r.Key, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
+        // Only download files that also have no baseline (truly new remote files)
+        var toDownloadNew = new List<KeyValuePair<string, DriveFile>>();
+        foreach (var item in toDownload)
+        {
+            var existing = await _stateStore.GetRecordAsync(pair.Id, SyncSide.Remote, item.Key);
+            if (existing is null)
+                toDownloadNew.Add(item);
+        }
+
+        if (toDownloadNew.Count > 0)
+        {
+            _logger.LogInformation("Reconciliation: {Download} remote-only files to download.", toDownloadNew.Count);
+            await Parallel.ForEachAsync(toDownloadNew,
+                new ParallelOptions { MaxDegreeOfParallelism = maxConcurrency, CancellationToken = ct },
+                async (item, token) => await DownloadRemoteFileAsync(item.Value, item.Key, pair, token));
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -1151,15 +1310,30 @@ public sealed class SyncEngine : ISyncEngine
         SyncPair pair,
         CancellationToken ct)
     {
-        var localHash = await HashHelper.ComputeMd5Async(localAbsPath, ct);
-        if (localHash.Equals(remoteFile.Md5Checksum ?? string.Empty, StringComparison.OrdinalIgnoreCase))
+        // Google Apps files (Docs, Sheets, etc.) have no md5Checksum — can't hash-compare.
+        // If both sides exist, just record baselines and skip transfer.
+        if (remoteFile.Md5Checksum is null)
+        {
+            var localInfo = new FileInfo(localAbsPath);
+            var localHash = await HashHelper.ComputeMd5Async(localAbsPath, ct);
+            await _stateStore.UpsertRecordAsync(new FileRecord
+            {
+                SyncPairId = pair.Id, Side = SyncSide.Local, RelativePath = relativePath,
+                SizeBytes  = localInfo.Length, ModifiedUtc = localInfo.LastWriteTimeUtc, ContentHash = localHash,
+            });
+            await _stateStore.UpsertRecordAsync(BuildRemoteRecord(pair.Id, relativePath, remoteFile));
+            return;
+        }
+
+        var hash = await HashHelper.ComputeMd5Async(localAbsPath, ct);
+        if (hash.Equals(remoteFile.Md5Checksum, StringComparison.OrdinalIgnoreCase))
         {
             // Content identical — just record baseline, no transfer needed
             var localInfo = new FileInfo(localAbsPath);
             await _stateStore.UpsertRecordAsync(new FileRecord
             {
                 SyncPairId = pair.Id, Side = SyncSide.Local, RelativePath = relativePath,
-                SizeBytes  = localInfo.Length, ModifiedUtc = localInfo.LastWriteTimeUtc, ContentHash = localHash,
+                SizeBytes  = localInfo.Length, ModifiedUtc = localInfo.LastWriteTimeUtc, ContentHash = hash,
             });
             await _stateStore.UpsertRecordAsync(BuildRemoteRecord(pair.Id, relativePath, remoteFile));
             return;
@@ -1170,7 +1344,7 @@ public sealed class SyncEngine : ISyncEngine
         var localRecord = new FileRecord
         {
             SyncPairId   = pair.Id, Side = SyncSide.Local, RelativePath = relativePath,
-            ContentHash  = localHash, ModifiedUtc = conflictInfo.LastWriteTimeUtc,
+            ContentHash  = hash, ModifiedUtc = conflictInfo.LastWriteTimeUtc,
             SizeBytes    = conflictInfo.Length,
         };
         await ResolveConflictAsync(localRecord, remoteFile, relativePath, pair, ct);

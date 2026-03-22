@@ -20,11 +20,14 @@ public sealed class FailedOperationTracker
         _logger = logger;
     }
 
+    private int _failedCount;
+    private int _exhaustedCount;
+
     /// <summary>Number of operations that can still be retried.</summary>
-    public int FailedCount => _failures.Values.Count(f => !f.IsExhausted);
+    public int FailedCount => Volatile.Read(ref _failedCount);
 
     /// <summary>Number of operations that have exhausted all retries.</summary>
-    public int ExhaustedCount => _failures.Values.Count(f => f.IsExhausted);
+    public int ExhaustedCount => Volatile.Read(ref _exhaustedCount);
 
     /// <summary>
     /// Record a failure for a change event. Increments attempt count and schedules next retry.
@@ -58,6 +61,7 @@ public sealed class FailedOperationTracker
             });
 
         var failure = _failures[key];
+        RecalculateCounts();
         if (failure.IsExhausted)
             _logger.LogWarning("Operation exhausted retries ({Count}/{Max}): {Kind} '{Path}'",
                 failure.AttemptCount, _config.MaxFileRetries, ev.Kind, ev.RelativePath);
@@ -71,7 +75,8 @@ public sealed class FailedOperationTracker
     /// </summary>
     public void MarkSuccess(ChangeEvent ev)
     {
-        _failures.TryRemove(MakeKey(ev), out _);
+        if (_failures.TryRemove(MakeKey(ev), out _))
+            RecalculateCounts();
     }
 
     /// <summary>
@@ -98,6 +103,18 @@ public sealed class FailedOperationTracker
     /// Get a snapshot of all failed operations for status reporting.
     /// </summary>
     public List<FailedOperation> GetSnapshot() => _failures.Values.ToList();
+
+    private void RecalculateCounts()
+    {
+        int failed = 0, exhausted = 0;
+        foreach (var f in _failures.Values)
+        {
+            if (f.IsExhausted) exhausted++;
+            else failed++;
+        }
+        Volatile.Write(ref _failedCount, failed);
+        Volatile.Write(ref _exhaustedCount, exhausted);
+    }
 
     private DateTime ComputeNextRetry(int attemptCount)
     {

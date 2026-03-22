@@ -32,16 +32,16 @@ public sealed class GlobFilter : IGlobFilter
             if (g.IsMatch(path)) return true;
 
         // Rule 1.5: Selective subfolder filter.
-        // If SelectedSubfolders is non-empty, only allow files that are either:
-        //   (a) at the root of the sync folder (no '/' in path), or
-        //   (b) inside one of the explicitly selected subfolders.
-        if (pair.SelectedSubfolders.Count > 0 && path.Contains('/'))
+        // If SelectedSubfolders is non-empty, only allow items that are inside
+        // (or equal to) one of the explicitly selected subfolders.
+        if (pair.SelectedSubfolders.Count > 0)
         {
             bool inSelectedSubfolder = pair.SelectedSubfolders.Any(sf =>
             {
                 var prefix = sf.Replace('\\', '/').TrimEnd('/');
                 return path.StartsWith(prefix + "/", StringComparison.OrdinalIgnoreCase)
-                    || path.Equals(prefix, StringComparison.OrdinalIgnoreCase);
+                    || path.Equals(prefix, StringComparison.OrdinalIgnoreCase)
+                    || prefix.StartsWith(path + "/", StringComparison.OrdinalIgnoreCase);
             });
             if (!inSelectedSubfolder) return true;
         }

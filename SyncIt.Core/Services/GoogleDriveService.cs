@@ -25,6 +25,7 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
     private readonly AsyncPolicy _downloadRetryPolicy;
     private readonly SyncConfig? _config;
     private readonly DriveFolderCache _folderCache = new();
+    private string? _resolvedRootId;
 
     // Fields requested on every file list/get (keep minimal to reduce response size)
     private const string FileFields = "id,name,mimeType,md5Checksum,size,modifiedTime,parents,trashed,headRevisionId";
@@ -70,7 +71,7 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
             var request = _drive.Files.List();
             request.Q           = $"'{folderId}' in parents and trashed = false";
             request.Fields      = ListFields;
-            request.PageSize    = 200;
+            request.PageSize    = 1000;
             request.IncludeItemsFromAllDrives = false;
             if (pageToken is not null) request.PageToken = pageToken;
 
@@ -98,6 +99,50 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
                 else
                 {
                     yield return file;
+                }
+            }
+        }
+        while (pageToken is not null);
+    }
+
+    public async IAsyncEnumerable<(DriveFile File, string RelativePath)> ListFilesWithPathsAsync(
+        string folderId,
+        string parentPath = "",
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+    {
+        string? pageToken = null;
+
+        do
+        {
+            var request = _drive.Files.List();
+            request.Q           = $"'{folderId}' in parents and trashed = false";
+            request.Fields      = ListFields;
+            request.PageSize    = 1000;
+            request.IncludeItemsFromAllDrives = false;
+            if (pageToken is not null) request.PageToken = pageToken;
+
+            var result = await _retryPolicy.ExecuteAsync(() => request.ExecuteAsync(ct));
+            pageToken  = result.NextPageToken;
+
+            if (result.Files is null) break;
+
+            foreach (var file in result.Files)
+            {
+                if (file.Trashed == true) continue;
+
+                var relativePath = string.IsNullOrEmpty(parentPath) ? file.Name : $"{parentPath}/{file.Name}";
+
+                if (file.MimeType == "application/vnd.google-apps.folder")
+                {
+                    _folderCache.Set(file.Id, file.Name, file.Parents?.FirstOrDefault());
+                    yield return (file, relativePath);
+
+                    await foreach (var child in ListFilesWithPathsAsync(file.Id, relativePath, ct))
+                        yield return child;
+                }
+                else
+                {
+                    yield return (file, relativePath);
                 }
             }
         }
@@ -323,6 +368,17 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
 
     public async Task<string?> GetRelativePathAsync(string fileId, string rootFolderId, CancellationToken ct = default)
     {
+        // Resolve "root" alias to actual Drive root folder ID
+        if (rootFolderId == "root")
+        {
+            if (_resolvedRootId is null)
+            {
+                var rootFile = await GetFileAsync("root", ct);
+                _resolvedRootId = rootFile?.Id ?? "root";
+            }
+            rootFolderId = _resolvedRootId;
+        }
+
         // If this IS the root folder, skip it — it's not "inside" itself
         if (fileId == rootFolderId) return null;
 

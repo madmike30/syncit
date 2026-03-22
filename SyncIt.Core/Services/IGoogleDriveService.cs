@@ -17,6 +17,13 @@ public interface IGoogleDriveService
     IAsyncEnumerable<DriveFile> ListFilesAsync(string folderId, CancellationToken ct = default);
 
     /// <summary>
+    /// List all files (recursively) within a Drive folder, including their relative paths.
+    /// Much faster than ListFilesAsync + GetRelativePathAsync since paths are built during traversal.
+    /// </summary>
+    IAsyncEnumerable<(DriveFile File, string RelativePath)> ListFilesWithPathsAsync(
+        string folderId, string parentPath = "", CancellationToken ct = default);
+
+    /// <summary>
     /// Download a file's content to a stream.
     /// Uses resumable download for files > 5MB.
     /// </summary>
