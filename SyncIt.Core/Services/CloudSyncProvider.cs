@@ -21,6 +21,7 @@ public sealed class CloudSyncProvider : IOverlayStateStore
 {
     private readonly string _syncRootPath;
     private readonly string _syncRootId;
+    private readonly string _displayName;
     private readonly ILogger _logger;
     private bool _registered;
     private long _connectionKey;
@@ -29,10 +30,11 @@ public sealed class CloudSyncProvider : IOverlayStateStore
     // When count drops to 0, the directory is marked as in-sync.
     private readonly ConcurrentDictionary<string, int> _dirNotSyncedCount = new(StringComparer.OrdinalIgnoreCase);
 
-    public CloudSyncProvider(string syncRootPath, string providerId, ILogger logger)
+    public CloudSyncProvider(string syncRootPath, string providerId, ILogger logger, string? displayName = null)
     {
         _syncRootPath = Path.GetFullPath(syncRootPath);
         _logger = logger;
+        _displayName = displayName ?? Path.GetFileName(_syncRootPath);
 
         // Build sync root ID: ProviderId!UserSID!AccountId
         var sid = WindowsIdentity.GetCurrent().User?.Value ?? "default";
@@ -60,7 +62,7 @@ public sealed class CloudSyncProvider : IOverlayStateStore
 
     private void MarkAllAsSynced(Func<string, bool>? isSyncedFilter)
     {
-        int converted = 0, skipped = 0, failed = 0;
+        int synced = 0, cleared = 0, failed = 0;
         try
         {
             foreach (var dir in Directory.EnumerateDirectories(_syncRootPath, "*", SearchOption.AllDirectories))
@@ -68,19 +70,24 @@ public sealed class CloudSyncProvider : IOverlayStateStore
                 try
                 {
                     var relativePath = Path.GetRelativePath(_syncRootPath, dir).Replace('\\', '/');
-                    if (isSyncedFilter is not null && !isSyncedFilter(relativePath))
+                    bool isSynced = isSyncedFilter is null || isSyncedFilter(relativePath);
+                    if (isSynced)
                     {
-                        skipped++;
-                        continue;
+                        EnsurePlaceholder(dir);
+                        SetInSyncState(dir, true);
+                        synced++;
                     }
-                    EnsurePlaceholder(dir);
-                    SetInSyncState(dir, true);
-                    converted++;
+                    else if (CfApi.IsPlaceholder(dir))
+                    {
+                        // Clear stale green checkmark from a previous broader selection
+                        SetInSyncState(dir, false);
+                        cleared++;
+                    }
                 }
                 catch (Exception ex)
                 {
                     failed++;
-                    _logger.LogDebug(ex, "Failed to convert directory {Path} to placeholder", dir);
+                    _logger.LogDebug(ex, "Failed to update directory {Path}", dir);
                 }
             }
 
@@ -89,23 +96,28 @@ public sealed class CloudSyncProvider : IOverlayStateStore
                 try
                 {
                     var relativePath = Path.GetRelativePath(_syncRootPath, file).Replace('\\', '/');
-                    if (isSyncedFilter is not null && !isSyncedFilter(relativePath))
+                    bool isSynced = isSyncedFilter is null || isSyncedFilter(relativePath);
+                    if (isSynced)
                     {
-                        skipped++;
-                        continue;
+                        EnsurePlaceholder(file);
+                        SetInSyncState(file, true);
+                        synced++;
                     }
-                    EnsurePlaceholder(file);
-                    SetInSyncState(file, true);
-                    converted++;
+                    else if (CfApi.IsPlaceholder(file))
+                    {
+                        // Clear stale green checkmark from a previous broader selection
+                        SetInSyncState(file, false);
+                        cleared++;
+                    }
                 }
                 catch (Exception ex)
                 {
                     failed++;
-                    _logger.LogDebug(ex, "Failed to convert {Path} to placeholder", file);
+                    _logger.LogDebug(ex, "Failed to update {Path}", file);
                 }
             }
-            _logger.LogInformation("Marked {Synced} items as synced, {Skipped} skipped ({Failed} failed)",
-                converted, skipped, failed);
+            _logger.LogInformation("Overlay: {Synced} synced, {Cleared} cleared, {Failed} failed",
+                synced, cleared, failed);
         }
         catch (Exception ex)
         {
@@ -293,16 +305,15 @@ public sealed class CloudSyncProvider : IOverlayStateStore
 
     private async Task RegisterSyncRootAsync()
     {
-        // Check if already registered
-        if (IsAlreadyRegistered()) return;
-
+        // Always re-register to pick up display name or policy changes.
+        // StorageProviderSyncRootManager.Register is idempotent — it updates if already registered.
         var folder = await StorageFolder.GetFolderFromPathAsync(_syncRootPath);
 
         var info = new StorageProviderSyncRootInfo
         {
             Id = _syncRootId,
             Path = folder,
-            DisplayNameResource = "SyncIt",
+            DisplayNameResource = _displayName,
             IconResource = "%SystemRoot%\\system32\\shell32.dll,-16766",
             Version = "1.0",
             HydrationPolicy = StorageProviderHydrationPolicy.AlwaysFull,
