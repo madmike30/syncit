@@ -14,7 +14,7 @@ public sealed class FileStateStore : IFileStateStore
 {
     private readonly string _connectionString;
     private readonly ILogger<FileStateStore> _logger;
-    private bool _pragmasSet;
+    private volatile bool _pragmasSet;
 
     // Kept alive so named in-memory databases persist across connections.
     private readonly SqliteConnection? _keepAliveConnection;

@@ -57,6 +57,7 @@ public sealed class SyncItApp : ApplicationContext
     private IOverlayStateStore? _overlayStore;
     private IActivityLog? _activityLog;
 
+    private readonly object _enginesLock = new();
     private bool _globalPaused;
     private SyncStatus? _lastStatus;
     private List<FileTransferProgress>? _activeTransfers;
@@ -147,12 +148,6 @@ public sealed class SyncItApp : ApplicationContext
                 }
             }
 
-            // Initialize databases
-            var stateStore = CreateStateStore();
-            await stateStore.InitializeAsync(ct);
-            var journal = CreateDeletionJournal();
-            await journal.InitializeAsync(ct);
-
             // OAuth
             var oauthService = new OAuthService(_config, CreateLogger<OAuthService>());
             var credential   = await oauthService.InitializeAsync(ct);
@@ -167,6 +162,10 @@ public sealed class SyncItApp : ApplicationContext
             _activityLog = new ActivityLog(_config.ActivityLogPath, CreateLogger<ActivityLog>());
             await _activityLog.InitializeAsync(ct);
             await _activityLog.PruneAsync(_config.ActivityLogRetentionDays, ct);
+
+            // Prune local trash older than retention period
+            var trashManager = new LocalTrashManager(_config.LocalTrashPath, CreateLogger<LocalTrashManager>());
+            trashManager.PruneOldEntries();
 
             // Explorer overlay
             var firstPair = _config.SyncPairs.FirstOrDefault(p => p.Enabled);
@@ -280,7 +279,7 @@ public sealed class SyncItApp : ApplicationContext
                 _activityLog);
 
             deletionCoord.DeletionFreezeTriggered += OnDeletionFreezeTriggered;
-            _deletionCoordinators.Add(deletionCoord);
+            lock (_enginesLock) { _deletionCoordinators.Add(deletionCoord); }
 
             var changeQueue   = new ChangeQueue();
             var conflictRes   = new ConflictResolver(CreateLogger<ConflictResolver>());
@@ -294,7 +293,7 @@ public sealed class SyncItApp : ApplicationContext
             engine.StatusChanged += OnEngineStatusChanged;
             engine.TransferTracker.ProgressChanged += OnTransferProgress;
 
-            _engines.Add(engine);
+            lock (_enginesLock) { _engines.Add(engine); }
             await engine.StartAsync(pair, ct);
         }
 
@@ -303,9 +302,14 @@ public sealed class SyncItApp : ApplicationContext
 
     private async Task StopEnginesAsync()
     {
-        // Snapshot to avoid "Collection was modified" during concurrent access
-        var engines = _engines.ToArray();
-        var coordinators = _deletionCoordinators.ToArray();
+        // Snapshot under lock to avoid races with concurrent Add/reads
+        SyncEngine[] engines;
+        DeletionCoordinator[] coordinators;
+        lock (_enginesLock)
+        {
+            engines = _engines.ToArray();
+            coordinators = _deletionCoordinators.ToArray();
+        }
 
         // Unsubscribe event handlers BEFORE disposing to prevent leaks
         foreach (var engine in engines)
@@ -321,8 +325,11 @@ public sealed class SyncItApp : ApplicationContext
             try { await engine.DisposeAsync(); }
             catch (Exception ex) { _logger.LogWarning(ex, "Error stopping engine."); }
         }
-        _engines.Clear();
-        _deletionCoordinators.Clear();
+        lock (_enginesLock)
+        {
+            _engines.Clear();
+            _deletionCoordinators.Clear();
+        }
     }
 
     // =========================================================================
@@ -357,7 +364,9 @@ public sealed class SyncItApp : ApplicationContext
             // Every 5 minutes when idle: trim working set and collect Gen2
             if (loopCount % 30 == 0)
             {
-                var isIdle = _engines.All(e => e.GetStatus().State == SyncState.Idle);
+                SyncEngine[] snapshot;
+                lock (_enginesLock) { snapshot = _engines.ToArray(); }
+                var isIdle = snapshot.All(e => e.GetStatus().State == SyncState.Idle);
                 if (isIdle)
                 {
                     GC.Collect(2, GCCollectionMode.Optimized, blocking: false);
@@ -379,11 +388,14 @@ public sealed class SyncItApp : ApplicationContext
 
     private SyncStatus BuildStatus()
     {
+        SyncEngine[] engines;
+        lock (_enginesLock) { engines = _engines.ToArray(); }
+
         var status = new SyncStatus
         {
             State                 = _globalPaused ? SyncState.Paused : SyncState.Idle,
             LastSuccessfulSyncUtc = null,
-            PairStatuses          = _engines.Select(e => e.GetStatus()).ToList(),
+            PairStatuses          = engines.Select(e => e.GetStatus()).ToList(),
         };
 
         if (_accountInfo is not null)
@@ -393,16 +405,16 @@ public sealed class SyncItApp : ApplicationContext
             status.StorageTotalBytes = _accountInfo.StorageTotalBytes;
         }
 
-        if (_engines.Count > 0)
+        if (engines.Length > 0)
         {
             status.Metrics = new SyncMetricsSnapshot
             {
-                TotalBytesUploaded   = _engines.Sum(e => e.Metrics.TotalBytesUploaded),
-                TotalBytesDownloaded = _engines.Sum(e => e.Metrics.TotalBytesDownloaded),
-                TotalApiCalls        = _engines.Sum(e => e.Metrics.TotalApiCalls),
-                TotalSyncCycles      = _engines.Sum(e => e.Metrics.TotalSyncCycles),
-                TotalErrors          = _engines.Sum(e => e.Metrics.TotalErrors),
-                LastCycleDurationMs  = _engines.Max(e => e.Metrics.LastCycleDurationMs),
+                TotalBytesUploaded   = engines.Sum(e => e.Metrics.TotalBytesUploaded),
+                TotalBytesDownloaded = engines.Sum(e => e.Metrics.TotalBytesDownloaded),
+                TotalApiCalls        = engines.Sum(e => e.Metrics.TotalApiCalls),
+                TotalSyncCycles      = engines.Sum(e => e.Metrics.TotalSyncCycles),
+                TotalErrors          = engines.Sum(e => e.Metrics.TotalErrors),
+                LastCycleDurationMs  = engines.Max(e => e.Metrics.LastCycleDurationMs),
             };
         }
 
@@ -477,7 +489,7 @@ public sealed class SyncItApp : ApplicationContext
             _                 => status.State.ToString(),
         };
         _statusItem.Text = status.AccountEmail is not null
-            ? $"SyncIt — {stateText}"
+            ? $"SyncIt — {status.AccountEmail} — {stateText}"
             : $"SyncIt — {stateText}";
         _pauseItem.Text = status.State == SyncState.Paused ? "Resume Syncing" : "Pause Syncing";
     }
@@ -817,7 +829,9 @@ public sealed class SyncItApp : ApplicationContext
     {
         if ((DateTime.UtcNow - _lastTransferPush).TotalSeconds < 1) return;
         _lastTransferPush = DateTime.UtcNow;
-        _activeTransfers = _engines.SelectMany(e => e.TransferTracker.ActiveTransfers).ToList();
+        SyncEngine[] snapshot;
+        lock (_enginesLock) { snapshot = _engines.ToArray(); }
+        _activeTransfers = snapshot.SelectMany(e => e.TransferTracker.ActiveTransfers).ToList();
     }
 
     // =========================================================================

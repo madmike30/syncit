@@ -48,6 +48,16 @@ public sealed class LocalTrashManager
             return trashPath;
         }
 
+        // Guard against collision (two deletions of the same relative path in the same second)
+        if (File.Exists(trashPath))
+        {
+            var ext     = Path.GetExtension(trashPath);
+            var noExt   = trashPath[..^ext.Length];
+            int counter = 1;
+            while (File.Exists(trashPath))
+                trashPath = $"{noExt}.{counter++}{ext}";
+        }
+
         File.Move(localAbsolutePath, trashPath, overwrite: false);
         _logger.LogInformation("Moved '{Source}' to trash at '{Dest}'", localAbsolutePath, trashPath);
         return trashPath;
