@@ -62,32 +62,28 @@ public sealed class CloudSyncProvider : IOverlayStateStore
 
     private void MarkAllAsSynced(Func<string, bool>? isSyncedFilter)
     {
-        int synced = 0, cleared = 0, failed = 0;
+        // Under a registered sync root, Windows shows a sync-pending icon for ANY
+        // file that isn't explicitly marked as in-sync. We can't selectively hide
+        // the status column per-item — it's all-or-nothing per sync root.
+        // So we mark everything as in-sync (green checkmark) to avoid confusing
+        // sync arrows on non-synced items. Real-time overlay updates during actual
+        // sync operations (syncing, pending, error) still work correctly for
+        // actively synced folders.
+        int converted = 0, failed = 0;
         try
         {
             foreach (var dir in Directory.EnumerateDirectories(_syncRootPath, "*", SearchOption.AllDirectories))
             {
                 try
                 {
-                    var relativePath = Path.GetRelativePath(_syncRootPath, dir).Replace('\\', '/');
-                    bool isSynced = isSyncedFilter is null || isSyncedFilter(relativePath);
-                    if (isSynced)
-                    {
-                        EnsurePlaceholder(dir);
-                        SetInSyncState(dir, true);
-                        synced++;
-                    }
-                    else if (CfApi.IsPlaceholder(dir))
-                    {
-                        // Revert to normal folder — removes all status icons
-                        RevertPlaceholder(dir);
-                        cleared++;
-                    }
+                    EnsurePlaceholder(dir);
+                    SetInSyncState(dir, true);
+                    converted++;
                 }
                 catch (Exception ex)
                 {
                     failed++;
-                    _logger.LogDebug(ex, "Failed to update directory {Path}", dir);
+                    _logger.LogDebug(ex, "Failed to convert directory {Path} to placeholder", dir);
                 }
             }
 
@@ -95,29 +91,17 @@ public sealed class CloudSyncProvider : IOverlayStateStore
             {
                 try
                 {
-                    var relativePath = Path.GetRelativePath(_syncRootPath, file).Replace('\\', '/');
-                    bool isSynced = isSyncedFilter is null || isSyncedFilter(relativePath);
-                    if (isSynced)
-                    {
-                        EnsurePlaceholder(file);
-                        SetInSyncState(file, true);
-                        synced++;
-                    }
-                    else if (CfApi.IsPlaceholder(file))
-                    {
-                        // Revert to normal file — removes all status icons
-                        RevertPlaceholder(file);
-                        cleared++;
-                    }
+                    EnsurePlaceholder(file);
+                    SetInSyncState(file, true);
+                    converted++;
                 }
                 catch (Exception ex)
                 {
                     failed++;
-                    _logger.LogDebug(ex, "Failed to update {Path}", file);
+                    _logger.LogDebug(ex, "Failed to convert {Path} to placeholder", file);
                 }
             }
-            _logger.LogInformation("Overlay: {Synced} synced, {Cleared} cleared, {Failed} failed",
-                synced, cleared, failed);
+            _logger.LogInformation("Marked {Count} items as synced ({Failed} failed)", converted, failed);
         }
         catch (Exception ex)
         {
