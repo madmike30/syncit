@@ -79,8 +79,8 @@ public sealed class CloudSyncProvider : IOverlayStateStore
                     }
                     else if (CfApi.IsPlaceholder(dir))
                     {
-                        // Clear stale green checkmark from a previous broader selection
-                        SetInSyncState(dir, false);
+                        // Revert to normal folder — removes all status icons
+                        RevertPlaceholder(dir);
                         cleared++;
                     }
                 }
@@ -105,8 +105,8 @@ public sealed class CloudSyncProvider : IOverlayStateStore
                     }
                     else if (CfApi.IsPlaceholder(file))
                     {
-                        // Clear stale green checkmark from a previous broader selection
-                        SetInSyncState(file, false);
+                        // Revert to normal file — removes all status icons
+                        RevertPlaceholder(file);
                         cleared++;
                     }
                 }
@@ -405,6 +405,23 @@ public sealed class CloudSyncProvider : IOverlayStateStore
         }
     }
 
+    /// <summary>
+    /// Reverts a placeholder back to a normal file, removing all Cloud Files status icons.
+    /// </summary>
+    private void RevertPlaceholder(string absolutePath)
+    {
+        using var handle = OpenFileHandle(absolutePath);
+        if (handle is null) return;
+
+        int hr = CfApi.CfRevertPlaceholder(
+            handle.DangerousGetHandle(),
+            CfApi.CF_REVERT_FLAG_NONE,
+            IntPtr.Zero);
+
+        if (hr < 0)
+            _logger.LogDebug("CfRevertPlaceholder failed: 0x{Hr:X8} for {Path}", hr, absolutePath);
+    }
+
     private static SafeFileHandle? OpenFileHandle(string path)
     {
         var handle = CfApi.CreateFileW(
@@ -505,6 +522,14 @@ public sealed class CloudSyncProvider : IOverlayStateStore
 
         [DllImport("cldapi.dll")]
         public static extern int CfDisconnectSyncRoot(long connectionKey);
+
+        [DllImport("cldapi.dll", CharSet = CharSet.Unicode)]
+        public static extern int CfRevertPlaceholder(
+            IntPtr fileHandle,
+            uint revertFlags,
+            IntPtr overlapped);
+
+        public const uint CF_REVERT_FLAG_NONE = 0;
 
         [DllImport("cldapi.dll", CharSet = CharSet.Unicode)]
         public static extern int CfUnregisterSyncRoot(string syncRootPath);
