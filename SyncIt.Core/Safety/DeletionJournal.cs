@@ -94,15 +94,22 @@ public sealed class DeletionJournal : IDisposable
         DeletionStatus status,
         DateTime? executedUtc = null,
         string? trashPath = null,
+        bool resetGraceCycles = false,
         CancellationToken ct = default)
     {
         await using var conn = await OpenAsync(ct);
         await using var cmd  = conn.CreateCommand();
-        cmd.CommandText = """
-            UPDATE deletion_records
-            SET status=@status, executed_utc=@exec, trash_path=@trash
-            WHERE id=@id;
-            """;
+        cmd.CommandText = resetGraceCycles
+            ? """
+              UPDATE deletion_records
+              SET status=@status, executed_utc=@exec, trash_path=@trash, grace_cycles=0
+              WHERE id=@id;
+              """
+            : """
+              UPDATE deletion_records
+              SET status=@status, executed_utc=@exec, trash_path=@trash
+              WHERE id=@id;
+              """;
         cmd.Parameters.AddWithValue("@id",     id);
         cmd.Parameters.AddWithValue("@status", (int)status);
         cmd.Parameters.AddWithValue("@exec",   (object?)executedUtc?.ToString("O") ?? DBNull.Value);
