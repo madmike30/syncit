@@ -224,6 +224,8 @@ public sealed class CloudSyncProvider : IOverlayStateStore
     // Cloud Filter Connection
     // ---------------------------------------------------------------
 
+    private const int ERROR_CLOUD_FILE_ALREADY_CONNECTED = unchecked((int)0x80070186);
+
     private void ConnectSyncRoot()
     {
         // Empty callback table — terminated by CF_CALLBACK_TYPE_NONE sentinel.
@@ -241,6 +243,32 @@ public sealed class CloudSyncProvider : IOverlayStateStore
             IntPtr.Zero,
             CfApi.CF_CONNECT_FLAG_NONE,
             out _connectionKey);
+
+        // If a previous process was killed without disconnecting, the sync root
+        // is still connected with a stale key. Unregister to clear the dead
+        // connection, re-register, and retry.
+        if (hr == ERROR_CLOUD_FILE_ALREADY_CONNECTED)
+        {
+            _logger.LogWarning("Sync root already connected (stale from previous crash). Unregistering and retrying...");
+            try
+            {
+                StorageProviderSyncRootManager.Unregister(_syncRootId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Failed to unregister stale sync root");
+            }
+
+            // Re-register (Unregister clears the dead connection)
+            RegisterSyncRootAsync().GetAwaiter().GetResult();
+
+            hr = CfApi.CfConnectSyncRoot(
+                _syncRootPath,
+                callbackTable,
+                IntPtr.Zero,
+                CfApi.CF_CONNECT_FLAG_NONE,
+                out _connectionKey);
+        }
 
         if (hr < 0)
             throw new InvalidOperationException(
