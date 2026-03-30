@@ -21,4 +21,7 @@ public interface IChangeQueue
 
     /// <summary>Total events ready and waiting to be consumed.</summary>
     int ReadyCount { get; }
+
+    /// <summary>Discard all pending and ready events.</summary>
+    void Clear();
 }

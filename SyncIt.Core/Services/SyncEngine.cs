@@ -168,6 +168,8 @@ public sealed class SyncEngine : ISyncEngine
         catch (Exception ex)
         {
             _logger.LogError(ex, "Initial sync/reconcile failed for pair {Id}", pair.Id);
+            StopFileSystemWatcher();
+            _changeQueue.Clear();
             SetState(SyncState.Error, $"Sync failed: {ex.Message}");
             return;
         }
@@ -446,6 +448,7 @@ public sealed class SyncEngine : ISyncEngine
 
                 var relativePath = await _driveService.GetRelativePathAsync(change.FileId, pair.RemoteFolderId, ct);
                 if (relativePath is null) continue;
+                relativePath = GetRemoteSyncRelativePath(change.File, relativePath);
 
                 // Safety: reject paths that include Google Drive's virtual root name
                 // (indicates GetRelativePathAsync walked past the sync root folder)
@@ -517,17 +520,18 @@ public sealed class SyncEngine : ISyncEngine
                 }
 
                 // Add the top-level folder itself (ListFilesWithPathsAsync lists from inside it)
-                remoteFiles[match.Name] = new DriveFile
+                remoteFiles[match.RelativePath] = new DriveFile
                 {
                     Id = match.DriveId, Name = match.Name,
                     MimeType = "application/vnd.google-apps.folder",
                 };
 
                 // List all files recursively with paths built during traversal (no extra API calls)
-                await foreach (var (file, rel) in _driveService.ListFilesWithPathsAsync(match.DriveId, match.Name, ct))
+                await foreach (var (file, rel) in _driveService.ListFilesWithPathsAsync(match.DriveId, match.RelativePath, ct))
                 {
-                    if (_globFilter.IsIncluded(rel, pair))
-                        remoteFiles[rel] = file;
+                    var syncRel = GetRemoteSyncRelativePath(file, rel);
+                    if (_globFilter.IsIncluded(syncRel, pair))
+                        remoteFiles[syncRel] = file;
                 }
             }
         }
@@ -536,8 +540,9 @@ public sealed class SyncEngine : ISyncEngine
             // No subfolder selection — list everything from the remote root
             await foreach (var (file, rel) in _driveService.ListFilesWithPathsAsync(pair.RemoteFolderId, "", ct))
             {
-                if (_globFilter.IsIncluded(rel, pair))
-                    remoteFiles[rel] = file;
+                var syncRel = GetRemoteSyncRelativePath(file, rel);
+                if (_globFilter.IsIncluded(syncRel, pair))
+                    remoteFiles[syncRel] = file;
             }
         }
 
@@ -759,16 +764,17 @@ public sealed class SyncEngine : ISyncEngine
             if (match is null) continue;
 
             // Add the top-level folder itself
-            remoteFiles[match.Name] = new DriveFile
+            remoteFiles[match.RelativePath] = new DriveFile
             {
                 Id = match.DriveId, Name = match.Name,
                 MimeType = "application/vnd.google-apps.folder",
             };
 
-            await foreach (var (file, rel) in _driveService.ListFilesWithPathsAsync(match.DriveId, match.Name, ct))
+            await foreach (var (file, rel) in _driveService.ListFilesWithPathsAsync(match.DriveId, match.RelativePath, ct))
             {
-                if (_globFilter.IsIncluded(rel, pair))
-                    remoteFiles[rel] = file;
+                var syncRel = GetRemoteSyncRelativePath(file, rel);
+                if (_globFilter.IsIncluded(syncRel, pair))
+                    remoteFiles[syncRel] = file;
             }
         }
 
@@ -1215,7 +1221,9 @@ public sealed class SyncEngine : ISyncEngine
                 _logger.LogDebug("Skipping Google Doc (export disabled): {Path}", relativePath);
                 return;
             }
-            outputPath = Path.ChangeExtension(localPath, ext);
+            outputPath = localPath.EndsWith(ext, StringComparison.OrdinalIgnoreCase)
+                ? localPath
+                : localPath + ext;
         }
         else if (isGoogleAppsType)
         {
@@ -1479,6 +1487,16 @@ public sealed class SyncEngine : ISyncEngine
             MimeType      = file.MimeType,
         };
 
+    private static string GetRemoteSyncRelativePath(Google.Apis.Drive.v3.Data.File file, string relativePath)
+    {
+        if (GoogleDocExportMap.TryGetExport(file.MimeType, out _, out var ext))
+            return (relativePath.EndsWith(ext, StringComparison.OrdinalIgnoreCase)
+                ? relativePath
+                : relativePath + ext).Replace('\\', '/');
+
+        return relativePath;
+    }
+
     /// <summary>Set overlay state for a file (if overlay store is available).</summary>
     private async Task SetOverlayAsync(string relativePath, OverlaySyncState state, CancellationToken ct = default)
     {
@@ -1547,18 +1565,22 @@ public sealed class SyncEngine : ISyncEngine
             _internalCts.Dispose();
         }
 
-        // Unsubscribe FSW handlers before disposing to prevent leaks
-        if (_fsw is not null)
-        {
-            _fsw.EnableRaisingEvents = false;
-            if (_fswCreated is not null) _fsw.Created -= _fswCreated;
-            if (_fswChanged is not null) _fsw.Changed -= _fswChanged;
-            if (_fswDeleted is not null) _fsw.Deleted -= _fswDeleted;
-            if (_fswRenamed is not null) _fsw.Renamed -= _fswRenamed;
-            if (_fswError is not null)   _fsw.Error   -= _fswError;
-            _fsw.Dispose();
-        }
+        StopFileSystemWatcher();
         _transferSlim.Dispose();
         if (_changeQueue is IDisposable d) d.Dispose();
+    }
+
+    private void StopFileSystemWatcher()
+    {
+        if (_fsw is null) return;
+
+        _fsw.EnableRaisingEvents = false;
+        if (_fswCreated is not null) _fsw.Created -= _fswCreated;
+        if (_fswChanged is not null) _fsw.Changed -= _fswChanged;
+        if (_fswDeleted is not null) _fsw.Deleted -= _fswDeleted;
+        if (_fswRenamed is not null) _fsw.Renamed -= _fswRenamed;
+        if (_fswError is not null)   _fsw.Error   -= _fswError;
+        _fsw.Dispose();
+        _fsw = null;
     }
 }

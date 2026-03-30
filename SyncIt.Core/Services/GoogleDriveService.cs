@@ -25,6 +25,7 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
     private readonly AsyncPolicy _downloadRetryPolicy;
     private readonly SyncConfig? _config;
     private readonly DriveFolderCache _folderCache = new();
+    private readonly AsyncKeyedLocker _folderEnsureLocks = new(StringComparer.OrdinalIgnoreCase);
     private string? _resolvedRootId;
 
     // Fields requested on every file list/get (keep minimal to reduce response size)
@@ -87,7 +88,7 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
                 // Cache folder entries for fast path resolution
                 if (file.MimeType == "application/vnd.google-apps.folder")
                 {
-                    _folderCache.Set(file.Id, file.Name, file.Parents?.FirstOrDefault());
+                    _folderCache.Set(file.Id, PathHelper.SanitizeRemoteSegment(file.Name ?? file.Id ?? "unnamed"), file.Parents?.FirstOrDefault());
 
                     // Yield the folder itself so callers can create it locally
                     yield return file;
@@ -130,11 +131,11 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
             {
                 if (file.Trashed == true) continue;
 
-                var relativePath = string.IsNullOrEmpty(parentPath) ? file.Name : $"{parentPath}/{file.Name}";
+                var relativePath = PathHelper.CombineRemoteRelativePath(parentPath, file.Name ?? file.Id ?? "unnamed");
 
                 if (file.MimeType == "application/vnd.google-apps.folder")
                 {
-                    _folderCache.Set(file.Id, file.Name, file.Parents?.FirstOrDefault());
+                    _folderCache.Set(file.Id, PathHelper.SanitizeRemoteSegment(file.Name ?? file.Id ?? "unnamed"), file.Parents?.FirstOrDefault());
                     yield return (file, relativePath);
 
                     await foreach (var child in ListFilesWithPathsAsync(file.Id, relativePath, ct))
@@ -328,7 +329,7 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
                         if (change.Removed == true || change.File.Trashed == true)
                             _folderCache.Remove(change.FileId);
                         else
-                            _folderCache.Set(change.FileId, change.File.Name, change.File.Parents?.FirstOrDefault());
+                            _folderCache.Set(change.FileId, PathHelper.SanitizeRemoteSegment(change.File.Name ?? change.FileId ?? "unnamed"), change.File.Parents?.FirstOrDefault());
                     }
                 }
             }
@@ -385,16 +386,17 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
         // Fetch file metadata (needed for name + parent)
         var file = await GetFileAsync(fileId, ct);
         if (file is null) return null;
+        var safeFileName = PathHelper.SanitizeRemoteSegment(file.Name ?? fileId);
 
         // Try cache-only resolution first (avoids parent API calls)
         var cachedPath = _folderCache.TryGetRelativePath(
-            fileId, file.Name, rootFolderId, file.Parents?.FirstOrDefault());
+            fileId, safeFileName, rootFolderId, file.Parents?.FirstOrDefault());
         if (cachedPath is not null)
             return cachedPath;
 
         // Cache miss — walk up the tree via API (and populate cache along the way)
         var segments = new Stack<string>();
-        segments.Push(file.Name);
+        segments.Push(safeFileName);
 
         var parentId = file.Parents?.FirstOrDefault();
         if (parentId is null) return null;
@@ -405,13 +407,13 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
             var parent = await GetFileAsync(parentId, ct);
             if (parent is null) return null;
 
-            _folderCache.Set(parentId, parent.Name, parent.Parents?.FirstOrDefault());
+            _folderCache.Set(parentId, PathHelper.SanitizeRemoteSegment(parent.Name ?? parentId), parent.Parents?.FirstOrDefault());
 
             // After caching this parent, try full cache resolution from the original file
-            var cached = _folderCache.TryGetRelativePath(fileId, file.Name, rootFolderId, file.Parents?.FirstOrDefault());
+            var cached = _folderCache.TryGetRelativePath(fileId, safeFileName, rootFolderId, file.Parents?.FirstOrDefault());
             if (cached is not null) return cached;
 
-            segments.Push(parent.Name);
+            segments.Push(PathHelper.SanitizeRemoteSegment(parent.Name ?? parentId));
             parentId = parent.Parents?.FirstOrDefault();
             reachedRoot = (parentId == rootFolderId);
         }
@@ -428,37 +430,44 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
 
         foreach (var part in parts)
         {
-            // Check if folder already exists
-            var listRequest = _drive.Files.List();
-            listRequest.Q        = $"'{parentId}' in parents and name = '{EscapeDriveQuery(part)}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false";
-            listRequest.Fields   = "files(id,name)";
-            listRequest.PageSize = 1;
+            var currentParentId = parentId;
+            var lockKey = $"{currentParentId}\n{part}";
 
-            var result   = await _retryPolicy.ExecuteAsync(() => listRequest.ExecuteAsync(ct));
-            var existing = result.Files?.FirstOrDefault();
+            parentId = await _folderEnsureLocks.RunAsync(lockKey, async () =>
+            {
+                // Re-check inside the lock so concurrent uploads cannot create duplicates.
+                var listRequest = _drive.Files.List();
+                listRequest.Q        = $"'{currentParentId}' in parents and name = '{EscapeDriveQuery(part)}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false";
+                listRequest.Fields   = "files(id,name,parents)";
+                listRequest.PageSize = 1;
 
-            if (existing is not null)
-            {
-                parentId = existing.Id;
-            }
-            else
-            {
-                // Create folder
+                var result   = await _retryPolicy.ExecuteAsync(() => listRequest.ExecuteAsync(ct));
+                var existing = result.Files?.FirstOrDefault();
+
+                if (existing is not null)
+                {
+                    _folderCache.Set(existing.Id, existing.Name, existing.Parents?.FirstOrDefault() ?? currentParentId);
+                    return existing.Id;
+                }
+
                 var folder = new DriveFile
                 {
                     Name     = part,
-                    Parents  = new[] { parentId },
+                    Parents  = new[] { currentParentId },
                     MimeType = "application/vnd.google-apps.folder",
                 };
+
                 var created = await _retryPolicy.ExecuteAsync(() =>
                 {
                     var req = _drive.Files.Create(folder);
-                    req.Fields = "id";
+                    req.Fields = "id,name,parents";
                     return req.ExecuteAsync(ct);
                 });
-                parentId = created.Id;
-                _logger.LogDebug("Created Drive folder '{Name}' under {Parent}", part, parentId);
-            }
+
+                _folderCache.Set(created.Id, created.Name ?? part, created.Parents?.FirstOrDefault() ?? currentParentId);
+                _logger.LogDebug("Created Drive folder '{Name}' under {ParentId} as {FolderId}", part, currentParentId, created.Id);
+                return created.Id;
+            }, ct);
         }
 
         return parentId;
@@ -490,9 +499,7 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
 
             foreach (var folder in page.Files)
             {
-                var relativePath = string.IsNullOrEmpty(parentPath)
-                    ? folder.Name
-                    : $"{parentPath}/{folder.Name}";
+                var relativePath = PathHelper.CombineRemoteRelativePath(parentPath, folder.Name ?? folder.Id ?? "unnamed");
 
                 result.Add(new DriveSubfolderInfo(folder.Name, relativePath, folder.Id));
 

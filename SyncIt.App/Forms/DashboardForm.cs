@@ -273,7 +273,7 @@ public sealed class DashboardForm : Form
             form.ShowDialog(this);
         }));
 
-        // ── Assemble (reverse order because DockStyle.Top stacks top-down) ──
+        // ── Assemble ────────────────────────────────────────────────
         root.Controls.Add(bottomPanel);
         root.Controls.Add(activityCard);
         root.Controls.Add(activityHeader);
@@ -282,14 +282,6 @@ public sealed class DashboardForm : Form
         root.Controls.Add(actionPanel);
         root.Controls.Add(statusCard);
         root.Controls.Add(header);
-
-        // Reverse child order so header is on top
-        var children = new Control[root.Controls.Count];
-        for (int i = 0; i < root.Controls.Count; i++)
-            children[i] = root.Controls[i];
-        root.Controls.Clear();
-        for (int i = children.Length - 1; i >= 0; i--)
-            root.Controls.Add(children[i]);
 
         Controls.Add(root);
     }

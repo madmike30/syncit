@@ -112,10 +112,20 @@ public sealed class ChangeQueue : IChangeQueue, IDisposable
 
     public void Dispose()
     {
+        Clear();
+        _ready.Writer.TryComplete();
+    }
+
+    public void Clear()
+    {
         foreach (var entry in _pending.Values)
             entry.Timer.Dispose();
         _pending.Clear();
-        _ready.Writer.TryComplete();
+
+        while (_ready.Reader.TryRead(out _))
+            Interlocked.Decrement(ref _readyCount);
+
+        Interlocked.Exchange(ref _readyCount, 0);
     }
 
     private sealed class PendingEntry

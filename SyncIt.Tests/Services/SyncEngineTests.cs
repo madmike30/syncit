@@ -132,4 +132,180 @@ public sealed class SyncEngineTests : IAsyncLifetime
         statuses.Should().HaveCountGreaterThanOrEqualTo(2);
         statuses.Last().State.Should().Be(SyncState.Idle);
     }
+
+    [Fact]
+    public async Task StartAsync_ReconcileFails_ClearsPendingChangesAndStopsWatcher()
+    {
+        using var tempDir = new TempDirectory();
+        var pair = TestHelpers.CreateTestSyncPair();
+        pair.LocalPath = tempDir.Path;
+
+        await File.WriteAllTextAsync(Path.Combine(tempDir.Path, "new.txt"), "hello");
+
+        var config = TestHelpers.CreateTestSyncConfig();
+        var drive = new Mock<IGoogleDriveService>();
+        var stateStore = new Mock<IFileStateStore>();
+        var conflictResolver = new Mock<IConflictResolver>();
+        var deletionCoordinator = new Mock<IDeletionCoordinator>();
+        var globFilter = new Mock<IGlobFilter>();
+        var changeQueue = new ChangeQueue();
+
+        var baselineStore = await TestHelpers.CreateInMemoryStateStoreAsync();
+        var journal = await TestHelpers.CreateInMemoryDeletionJournalAsync();
+        var safetyValidator = new DeletionSafetyValidator(
+            config, baselineStore, journal, NullLogger<DeletionSafetyValidator>.Instance);
+        var atomicWriter = new AtomicFileWriter(NullLogger<AtomicFileWriter>.Instance);
+
+        var engine = new SyncEngine(
+            pair, config, drive.Object, stateStore.Object, conflictResolver.Object,
+            deletionCoordinator.Object, globFilter.Object, changeQueue, safetyValidator,
+            atomicWriter, NullLogger<SyncEngine>.Instance);
+
+        deletionCoordinator.Setup(d => d.RenotifyFrozenAsync(pair.Id, It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        drive.Setup(d => d.GetStartPageTokenAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync("token-1");
+        drive.Setup(d => d.GetFileAsync(pair.RemoteFolderId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Google.Apis.Drive.v3.Data.File { Id = pair.RemoteFolderId, Name = "root" });
+        drive.Setup(d => d.ListSubfoldersAsync(pair.RemoteFolderId, "", 1, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new IOException("boom"));
+
+        stateStore.Setup(s => s.GetPageTokenAsync(pair.Id)).ReturnsAsync((string?)null);
+        stateStore.Setup(s => s.SavePageTokenAsync(pair.Id, "token-1")).Returns(Task.CompletedTask);
+        stateStore.Setup(s => s.CountRecordsAsync(pair.Id, SyncSide.Local)).ReturnsAsync(1);
+        stateStore.Setup(s => s.StreamRecordsAsync(pair.Id, SyncSide.Local, It.IsAny<CancellationToken>()))
+            .Returns(StreamRecords(TestHelpers.CreateFileRecord(pairId: pair.Id, relativePath: "old.txt")));
+
+        globFilter.Setup(g => g.IsIncluded(It.IsAny<string>(), pair)).Returns(true);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await engine.StartAsync(pair, cts.Token);
+
+        var statusAfterFailure = engine.GetStatus();
+        statusAfterFailure.State.Should().Be(SyncState.Error);
+        statusAfterFailure.PendingChanges.Should().Be(0);
+
+        await File.WriteAllTextAsync(Path.Combine(tempDir.Path, "later.txt"), "world");
+        await Task.Delay(900);
+
+        engine.GetStatus().PendingChanges.Should().Be(0);
+
+        await engine.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task StartAsync_InitialSyncWithSanitizedRemotePath_DownloadsFileAndCompletes()
+    {
+        using var tempDir = new TempDirectory();
+
+        var pair = TestHelpers.CreateTestSyncPair();
+        pair.LocalPath = tempDir.Path;
+
+        var config = TestHelpers.CreateTestSyncConfig();
+        var drive = new Mock<IGoogleDriveService>();
+        var stateStore = await TestHelpers.CreateInMemoryStateStoreAsync();
+        var conflictResolver = new Mock<IConflictResolver>();
+        var deletionCoordinator = new Mock<IDeletionCoordinator>();
+        var globFilter = new Mock<IGlobFilter>();
+        var changeQueue = new ChangeQueue();
+
+        var journal = await TestHelpers.CreateInMemoryDeletionJournalAsync();
+        var safetyValidator = new DeletionSafetyValidator(
+            config, stateStore, journal, NullLogger<DeletionSafetyValidator>.Instance);
+        var atomicWriter = new AtomicFileWriter(NullLogger<AtomicFileWriter>.Instance);
+
+        var engine = new SyncEngine(
+            pair, config, drive.Object, stateStore, conflictResolver.Object,
+            deletionCoordinator.Object, globFilter.Object, changeQueue, safetyValidator,
+            atomicWriter, NullLogger<SyncEngine>.Instance);
+
+        const string remoteName = "CONF: test/plan?.txt";
+        var sanitizedRelativePath = PathHelper.CombineRemoteRelativePath("", remoteName);
+        var remoteFile = new Google.Apis.Drive.v3.Data.File
+        {
+            Id = "drive-file-1",
+            Name = remoteName,
+            MimeType = "text/plain",
+            ModifiedTimeDateTimeOffset = DateTimeOffset.UtcNow,
+        };
+
+        deletionCoordinator.Setup(d => d.RenotifyFrozenAsync(pair.Id, It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        drive.Setup(d => d.GetStartPageTokenAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync("token-1");
+        drive.Setup(d => d.GetFileAsync(pair.RemoteFolderId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Google.Apis.Drive.v3.Data.File { Id = pair.RemoteFolderId, Name = "root" });
+        drive.Setup(d => d.ListFilesWithPathsAsync(pair.RemoteFolderId, "", It.IsAny<CancellationToken>()))
+            .Returns(ListFilesWithPaths((remoteFile, sanitizedRelativePath)));
+        drive.Setup(d => d.DownloadFileAsync(remoteFile.Id, It.IsAny<Stream>(), It.IsAny<IProgress<long>?>(), It.IsAny<CancellationToken>()))
+            .Returns< string, Stream, IProgress<long>?, CancellationToken >(async (_, stream, progress, _) =>
+            {
+                var bytes = System.Text.Encoding.UTF8.GetBytes("hello from drive");
+                await stream.WriteAsync(bytes);
+                progress?.Report(bytes.Length);
+            });
+
+        globFilter.Setup(g => g.IsIncluded(It.IsAny<string>(), pair)).Returns(true);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await engine.StartAsync(pair, cts.Token);
+
+        var expectedLocalPath = Path.Combine(tempDir.Path, sanitizedRelativePath.Replace('/', Path.DirectorySeparatorChar));
+        File.Exists(expectedLocalPath).Should().BeTrue();
+
+        var localRecord = await stateStore.GetRecordAsync(pair.Id, SyncSide.Local, sanitizedRelativePath);
+        var remoteRecord = await stateStore.GetRecordAsync(pair.Id, SyncSide.Remote, sanitizedRelativePath);
+
+        localRecord.Should().NotBeNull();
+        remoteRecord.Should().NotBeNull();
+        engine.GetStatus().State.Should().NotBe(SyncState.Error);
+
+        await engine.DisposeAsync();
+        stateStore.Dispose();
+        journal.Dispose();
+    }
+
+    private static async IAsyncEnumerable<FileRecord> StreamRecords(params FileRecord[] records)
+    {
+        foreach (var record in records)
+        {
+            yield return record;
+            await Task.Yield();
+        }
+    }
+
+    private static async IAsyncEnumerable<(Google.Apis.Drive.v3.Data.File File, string RelativePath)> ListFilesWithPaths(
+        params (Google.Apis.Drive.v3.Data.File File, string RelativePath)[] items)
+    {
+        foreach (var item in items)
+        {
+            yield return item;
+            await Task.Yield();
+        }
+    }
+
+    private sealed class TempDirectory : IDisposable
+    {
+        public TempDirectory()
+        {
+            Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "syncit-test-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Path);
+        }
+
+        public string Path { get; }
+
+        public void Dispose()
+        {
+            try
+            {
+                Directory.Delete(Path, recursive: true);
+            }
+            catch
+            {
+                // Best-effort cleanup for test temp dirs.
+            }
+        }
+    }
 }

@@ -178,6 +178,16 @@ public sealed class SyncItApp : ApplicationContext
                     isSyncedFilter: path => globFilter.IsIncluded(path, firstPair), ct);
             }
 
+            try
+            {
+                _accountInfo = await driveService.GetAccountInfoAsync(ct);
+                _lastAccountFetch = DateTime.UtcNow;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Failed to fetch initial account info.");
+            }
+
             // Start engines
             await StartEnginesAsync(driveService, globFilter, atomicWriter, ct);
 
@@ -379,12 +389,26 @@ public sealed class SyncItApp : ApplicationContext
 
     private SyncStatus BuildStatus()
     {
+        var pairStatuses = _engines.Select(e => e.GetStatus()).ToList();
         var status = new SyncStatus
         {
             State                 = _globalPaused ? SyncState.Paused : SyncState.Idle,
             LastSuccessfulSyncUtc = null,
-            PairStatuses          = _engines.Select(e => e.GetStatus()).ToList(),
+            PairStatuses          = pairStatuses,
         };
+
+        status.State =
+            _globalPaused ? SyncState.Paused :
+            pairStatuses.Any(p => p.State == SyncState.SafetyHalt) ? SyncState.SafetyHalt :
+            pairStatuses.Any(p => p.State == SyncState.DeletionFrozen) ? SyncState.DeletionFrozen :
+            pairStatuses.Any(p => p.State == SyncState.Error) ? SyncState.Error :
+            pairStatuses.Any(p => p.State == SyncState.Syncing) ? SyncState.Syncing :
+            pairStatuses.Count > 0 && pairStatuses.All(p => p.State == SyncState.Paused) ? SyncState.Paused :
+            SyncState.Idle;
+
+        status.LastError = pairStatuses
+            .Select(p => p.LastError)
+            .FirstOrDefault(static e => !string.IsNullOrWhiteSpace(e));
 
         if (_accountInfo is not null)
         {
