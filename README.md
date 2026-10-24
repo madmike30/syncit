@@ -11,6 +11,10 @@ A lightweight, bidirectional Google Drive sync tool for Windows. Keep a local fo
 
 ## Features
 
+- **Multiple Google accounts at once** — add several accounts (Settings → Accounts); every sync folder belongs to one account, each account has its own DPAPI-encrypted sign-in and its own Disconnect
+- **Shared drives** — sync a shared drive (Team Drive) with a local folder; pick it when you add a folder
+- **Auto-update** — checks GitHub Releases daily, tells you in the tray, downloads the installer, verifies it against the release's `SHA256SUMS` and installs only when you click OK (can be turned off)
+- **Settings window** — accounts, folders (exclude patterns, conflict rule, pause per folder), appearance (light by default, dark, follow Windows), updates, start with Windows, upload/download bandwidth limits
 - **Bidirectional sync** — local changes upload instantly via FileSystemWatcher; remote changes download via periodic polling
 - **Large file streaming** — files >5 MB stream directly to disk with resumable uploads and progress tracking
 - **Conflict resolution** — four configurable policies: LastWriteWins, KeepBoth, PreferLocal, PreferRemote
@@ -26,22 +30,37 @@ A lightweight, bidirectional Google Drive sync tool for Windows. Keep a local fo
 
 ## Why SyncIt vs Google Drive for desktop
 
-Google Drive for desktop is the right choice for most people. SyncIt is for a narrower case:
+Google Drive for desktop is the right choice for most people. SyncIt is for people who want plain local folders, explicit control and safety rails. Only capabilities that work in the current release are listed.
 
-- **Any Drive folder <-> any local folder.** Each sync pair links one Drive folder (by ID) to a local folder you pick. Drive for desktop mirrors your *whole* My Drive into one location (or streams it as a virtual drive).
-- **Several independent sync pairs**, each with its own include/exclude globs, max file size, conflict policy and selected subfolders.
-- **Plain local files, always offline.** No virtual drive and no on-demand placeholders: files are real copies on disk.
-- **Explicit conflict policies:** LastWriteWins, KeepBoth, PreferLocal or PreferRemote, per pair.
-- **Deletion safety:** grace period, a per-cycle deletion threshold that freezes deletes until you approve, a local trash folder and a deletion journal.
-- **Google Docs/Sheets/Slides exported to .docx/.xlsx/.pptx** on download, so they open offline in Office.
-- **Portable, no installer:** one self-contained `SyncIt.exe`; config is a readable JSON file that hot-reloads.
-- **No SyncIt server:** you sign in with Google directly, and files go straight between your PC and Google. Optionally, technical users can bring their own OAuth client.
+| | SyncIt | Google Drive for desktop |
+|---|---|---|
+| Sync **any local folder** (one or many) with Drive | ✅ each folder is its own sync pair | Mirrors My Drive into one location; other folders are backed up as "Computers" |
+| Files are **plain local copies**, always offline | ✅ always | Streaming (on-demand) by default; mirroring optional |
+| **Several Google accounts** at the same time | ✅ (no fixed limit) | ✅ up to 4 |
+| **Shared drives** | ✅ sync a shared drive with a local folder | ✅ (streamed) |
+| **Conflict rule per folder** (LastWriteWins, KeepBoth, PreferLocal, PreferRemote) | ✅ | Automatic; no per-folder choice |
+| **Exclude patterns** (`*.bak`, `node_modules/**`, …) per folder | ✅ | ❌ |
+| **Deletion safety**: grace period, mass-delete freeze that waits for your approval, local trash, deletion journal | ✅ | Deletes sync through (Drive trash only) |
+| Docs/Sheets/Slides **exported to .docx/.xlsx/.pptx** so they open offline in Office | ✅ | Shortcut files that open in the browser |
+| Explorer status icons | ✅ | ✅ |
+| Bandwidth limits | ✅ | ✅ |
+| Portable (no install) option | ✅ portable zip | ❌ |
+| Open source (MIT), no SyncIt server | ✅ | ❌ |
+| Google Photos, streaming/virtual drive, macOS | ❌ | ✅ |
 
-Limits to know (honest comparison):
+Limits to know: Windows only; no streaming mode; the built-in sign-in is not verified by Google yet, so Google shows an "unverified app" screen and limits new users (the optional own-client setup avoids both).
 
-- SyncIt uses **one Google account at a time** (you can switch accounts from the tray). Drive for desktop supports up to 4 accounts at once ([Google Help](https://support.google.com/drive/answer/10838124)).
-- Windows only. No streaming/on-demand mode, no shared-drive or Google Photos features.
-- The built-in sign-in isn't verified by Google yet, so Google shows an "unverified app" screen and limits new users. The optional own-client setup avoids both.
+## Windows SmartScreen warning
+
+SyncIt releases are not code-signed yet, so the first time you run the installer Windows may show **"Windows protected your PC"**. Click **More info → Run anyway**.
+
+Every release includes a `SHA256SUMS` file. To check a download before running it:
+
+```powershell
+Get-FileHash .\SyncIt-<version>-setup.exe -Algorithm SHA256
+```
+
+The hash must match the line for that file in `SHA256SUMS` on the release page. SyncIt's built-in auto-update does this check for you and refuses an installer that does not match.
 
 ## Install
 
@@ -109,7 +128,7 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full config reference
 - [Test Plan](docs/TEST-PLAN.md) — QA test matrix
 - [Google OAuth setup](docs/SETUP-GOOGLE-OAUTH.md) — sign-in, plus optional own-client setup
 - [Maintainer: Google Cloud setup](docs/GOOGLE-CLOUD-SETUP-FOR-MAINTAINER.md) — built-in client, limits, verification
-- [Roadmap](docs/ROADMAP.md) — planned features (multi-account)
+- [Roadmap](docs/ROADMAP.md) — what's next
 - [Releasing](docs/RELEASING.md) — tags, draft releases, signing options
 - [Privacy Policy](docs/PRIVACY.md) · [Terms of Use](docs/TERMS.md)
 - [Security](SECURITY.md) — credential storage and reporting issues

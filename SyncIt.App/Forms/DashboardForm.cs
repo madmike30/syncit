@@ -58,6 +58,8 @@ public sealed class DashboardForm : Form
     private Button _pauseBtn = null!;
     private System.Windows.Forms.Timer _refreshTimer = null!;
 
+    private readonly Action? _showSettings;
+
     public DashboardForm(
         Func<SyncStatus?> getStatus,
         Func<IReadOnlyList<FileTransferProgress>?> getTransfers,
@@ -70,8 +72,10 @@ public sealed class DashboardForm : Form
         Action? showAccountForm = null,
         Action<string>? selectSubfolders = null,
         Func<Task<List<ActivityRecord>?>>? fetchAllActivity = null,
-        Action? addSyncFolder = null)
+        Action? addSyncFolder = null,
+        Action? showSettings = null)
     {
+        _showSettings     = showSettings;
         _addSyncFolder    = addSyncFolder;
         _getStatus        = getStatus;
         _getTransfers     = getTransfers;
@@ -276,8 +280,9 @@ public sealed class DashboardForm : Form
             var logDir = PathHelper.Expand(@"%APPDATA%\SyncIt\logs");
             if (Directory.Exists(logDir)) Process.Start("explorer.exe", logDir);
         }));
-        bottomPanel.Controls.Add(MakeLinkLabel("Preferences", () =>
+        bottomPanel.Controls.Add(MakeLinkLabel("Settings", () =>
         {
+            if (_showSettings is not null) { _showSettings(); return; }
             using var form = new PreferencesForm();
             form.ShowDialog(this);
         }));

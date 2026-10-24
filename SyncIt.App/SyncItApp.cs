@@ -9,6 +9,7 @@ using SyncIt.Core.Models;
 using SyncIt.Core.Safety;
 using SyncIt.Core.Services;
 using SyncIt.App.Forms;
+using Google.Apis.Auth.OAuth2;
 
 namespace SyncIt.App;
 
@@ -73,6 +74,13 @@ public sealed class SyncItApp : ApplicationContext
     private readonly EngineLifecycleGate _lifecycle = new();
     private volatile bool _suppressConfigReload;
     private OAuthService? _oauthService;
+
+    // Multi-account (1.3): one credential per signed-in account, one Drive service per (account, shared drive).
+    private readonly Dictionary<string, UserCredential> _credentials = new();
+    private readonly Dictionary<string, GoogleDriveService> _pairDrives = new();
+    private readonly object _drivesLock = new();
+    private UpdateInfo? _availableUpdate;
+    private ToolStripMenuItem? _updateItem;
     private bool _globalPaused;
     private SyncStatus? _lastStatus;
     private List<FileTransferProgress>? _activeTransfers;
@@ -127,7 +135,7 @@ public sealed class SyncItApp : ApplicationContext
             // Migrate: ensure all pairs use Drive root ("root") as their remote base
             foreach (var pair in _config.SyncPairs)
             {
-                if (pair.RemoteFolderId != "root" && !string.IsNullOrEmpty(pair.RemoteFolderId))
+                if (AccountRegistry.NeedsLegacyRootMigration(pair))
                 {
                     _logger.LogInformation(
                         "Migrating pair '{Id}' from folder '{OldFolder}' to Drive root. " +
@@ -166,7 +174,8 @@ public sealed class SyncItApp : ApplicationContext
             }
 
             // Not signed in yet: show the friendly sign-in window instead of silently opening a browser.
-            if (!CredentialHelper.TokenExists(PathHelper.Expand(_config.TokenStorePath)))
+            if (!CredentialHelper.TokenExists(PathHelper.Expand(_config.TokenStorePath)) &&
+                !_config.Accounts.Any(a => CredentialHelper.TokenExists(PathHelper.Expand(a.TokenStorePath))))
             {
                 var signedIn = false;
                 InvokeUI(() => signedIn = ShowSignIn());
@@ -178,13 +187,16 @@ public sealed class SyncItApp : ApplicationContext
                 }
             }
 
-            // OAuth
-            var oauthService = new OAuthService(_config, CreateLogger<OAuthService>());
-            _oauthService = oauthService;
-            var credential   = await oauthService.InitializeAsync(ct);
+            // Accounts: migrate a pre-1.3 single-account config in place (same token file, same pair IDs).
+            if (AccountRegistry.Migrate(_config, p => CredentialHelper.TokenExists(PathHelper.Expand(p))))
+            {
+                _logger.LogInformation("Accounts: migrated existing sign-in to account '{Id}' ({Pairs} pair(s) bound).",
+                    _config.Accounts[0].Id, _config.SyncPairs.Count);
+                await SaveConfigQuietlyAsync(ct);
+            }
 
-            // Shared services
-            var driveService = new GoogleDriveService(credential, CreateLogger<GoogleDriveService>(), _config);
+            var driveService = await InitializeAccountsAsync(ct)
+                ?? throw new InvalidOperationException("No signed-in Google account could be initialized.");
             _driveService = driveService;
             var globFilter   = new GlobFilter();
             var atomicWriter = new AtomicFileWriter(CreateLogger<AtomicFileWriter>());
@@ -239,23 +251,20 @@ public sealed class SyncItApp : ApplicationContext
                         _config = newConfig;
                         var liveCt = _engineCts.Token;
 
-                        // If the Drive folder changed, reset state DBs (old file IDs are invalid)
-                        var oldPair = oldConfig.SyncPairs.FirstOrDefault(p => p.Enabled);
-                        var newPair = newConfig.SyncPairs.FirstOrDefault(p => p.Enabled);
-                        if (oldPair is not null && newPair is not null &&
-                            !string.Equals(oldPair.RemoteFolderId, newPair.RemoteFolderId, StringComparison.Ordinal))
+                        // If a pair's remote (account, shared drive or folder) changed, forget only that pair's state.
+                        AccountRegistry.Migrate(newConfig, p => CredentialHelper.TokenExists(PathHelper.Expand(p)));
+                        var changedPairs = AccountRegistry.PairsWithChangedRemote(oldConfig, newConfig);
+                        if (changedPairs.Count > 0)
                         {
-                            _logger.LogInformation("Drive folder changed — resetting state databases.");
-                            foreach (var db in new[] { _config.StateDbPath, _config.DeleteJournalPath })
+                            var store = CreateStateStore();
+                            await store.InitializeAsync(liveCt);
+                            foreach (var id in changedPairs)
                             {
-                                var path = PathHelper.Expand(db);
-                                foreach (var ext in new[] { "", "-shm", "-wal" })
-                                {
-                                    var f = path + ext;
-                                    if (File.Exists(f)) File.Delete(f);
-                                }
+                                _logger.LogInformation("Pair '{Id}' remote changed — resetting its sync state.", id);
+                                await store.DeletePairAsync(id);
                             }
                         }
+                        var newPair = newConfig.SyncPairs.FirstOrDefault(p => p.Enabled);
 
                         // Recreate overlay store for the (possibly new) sync folder path
                         var reloadGlobFilter = new GlobFilter();
@@ -281,6 +290,9 @@ public sealed class SyncItApp : ApplicationContext
             };
             _configWatcher.Start();
 
+            // Auto-update (opt-out in Settings → Updates)
+            _ = Task.Run(() => UpdateLoopAsync(ct));
+
             // Status push loop (updates tray every 10s)
             await StatusPushLoopAsync(ct);
         }
@@ -299,6 +311,260 @@ public sealed class SyncItApp : ApplicationContext
             await StopEnginesAsync();
             _overlayStore?.Dispose();
         }
+    }
+
+    // =========================================================================
+    // Accounts (1.3)
+    // =========================================================================
+
+    /// <summary>Loads every account that has a saved token (never opens a browser). Returns the primary account's Drive.</summary>
+    private async Task<GoogleDriveService?> InitializeAccountsAsync(CancellationToken ct)
+    {
+        GoogleDriveService? primary = null;
+        var emailsChanged = false;
+        foreach (var account in _config.Accounts.ToList())
+        {
+            if (!CredentialHelper.TokenExists(PathHelper.Expand(account.TokenStorePath)))
+            {
+                _logger.LogWarning("Account '{Id}' has no saved sign-in; its pairs will not sync until it is added again.", account.Id);
+                continue;
+            }
+            try
+            {
+                var oauth = new OAuthService(_config, account.TokenStorePath, CreateLogger<OAuthService>());
+                var credential = await oauth.InitializeAsync(ct);
+                lock (_drivesLock) _credentials[account.Id] = credential;
+                var drive = new GoogleDriveService(credential, CreateLogger<GoogleDriveService>(), _config);
+                if (primary is null) { primary = drive; _oauthService = oauth; }
+                if (string.IsNullOrEmpty(account.Email))
+                {
+                    try { account.Email = (await drive.GetAccountInfoAsync(ct)).Email; emailsChanged = true; }
+                    catch (Exception ex) { _logger.LogDebug(ex, "Could not read e-mail for account {Id}.", account.Id); }
+                }
+                if (drive != primary) drive.Dispose();
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "Could not initialize account '{Id}'.", account.Id);
+            }
+        }
+        _logger.LogInformation("Accounts ready: {Count} of {Total}.", _credentials.Count, _config.Accounts.Count);
+        if (emailsChanged) await SaveConfigQuietlyAsync(ct);
+        return primary;
+    }
+
+    /// <summary>Drive service for a pair (its account + shared drive), or null if that account is not signed in.</summary>
+    private GoogleDriveService? ResolveDrive(SyncPair pair)
+    {
+        var account = AccountRegistry.ForPair(_config, pair);
+        if (account is null) return null;
+        lock (_drivesLock)
+        {
+            if (!_credentials.TryGetValue(account.Id, out var credential)) return null;
+            var key = account.Id + "|" + (pair.SharedDriveId ?? "");
+            if (!_pairDrives.TryGetValue(key, out var drive))
+            {
+                drive = new GoogleDriveService(credential, CreateLogger<GoogleDriveService>(), _config, pair.SharedDriveId);
+                _pairDrives[key] = drive;
+            }
+            return drive;
+        }
+    }
+
+    private GoogleDriveService? DriveForAccount(string accountId)
+    {
+        lock (_drivesLock)
+            return _credentials.TryGetValue(accountId, out var c)
+                ? new GoogleDriveService(c, CreateLogger<GoogleDriveService>(), _config)
+                : null;
+    }
+
+    private async Task SaveConfigQuietlyAsync(CancellationToken ct = default)
+    {
+        _suppressConfigReload = true;
+        try { await File.WriteAllTextAsync(ConfigPath, JsonSerializer.Serialize(_config, WriteOpts), ct); }
+        finally
+        {
+            // let the file watcher event (debounced) pass before re-enabling reloads
+            _ = Task.Delay(1500).ContinueWith(_ => _suppressConfigReload = false);
+        }
+    }
+
+    /// <summary>Signs in an additional Google account (browser account picker). Existing accounts are untouched.</summary>
+    private async Task AddAccountAsync()
+    {
+        var account = new GoogleAccount();
+        account.TokenStorePath = AccountRegistry.NewTokenPath(account.Id);
+        try
+        {
+            var oauth = new OAuthService(_config, account.TokenStorePath, CreateLogger<OAuthService>());
+            var credential = await Task.Run(() => oauth.ReauthorizeAsync());
+            using var drive = new GoogleDriveService(credential, CreateLogger<GoogleDriveService>(), _config);
+            var info = await drive.GetAccountInfoAsync();
+            if (_config.Accounts.Any(a => string.Equals(a.Email, info.Email, StringComparison.OrdinalIgnoreCase)))
+            {
+                TryDeleteFile(PathHelper.Expand(account.TokenStorePath));
+                InvokeUI(() => MessageBox.Show($"{info.Email} is already added.", "SyncIt", MessageBoxButtons.OK, MessageBoxIcon.Information));
+                return;
+            }
+            account.Email = info.Email;
+            _config.Accounts.Add(account);
+            lock (_drivesLock) _credentials[account.Id] = credential;
+            await SaveConfigQuietlyAsync();
+            _logger.LogInformation("Account added: {Id}.", account.Id);
+            InvokeUI(() => ShowBalloon("SyncIt", $"Added {info.Email}. Use Add folder to sync one of its folders.", ToolTipIcon.Info));
+        }
+        catch (Exception ex)
+        {
+            TryDeleteFile(PathHelper.Expand(account.TokenStorePath));
+            _logger.LogWarning(ex, "Adding an account failed.");
+            InvokeUI(() => MessageBox.Show($"Could not add the account:\n{ex.Message}", "SyncIt", MessageBoxButtons.OK, MessageBoxIcon.Warning));
+        }
+    }
+
+    /// <summary>Disconnects one account: revokes its access, deletes its token and removes its pairs
+    /// (files on this PC and in Drive are not touched). The last account uses the full disconnect.</summary>
+    private async Task DisconnectAccountByIdAsync(string accountId)
+    {
+        if (_config.Accounts.Count <= 1) { await DisconnectAccountAsync(); return; }
+        var account = _config.Accounts.FirstOrDefault(a => a.Id == accountId);
+        if (account is null) return;
+
+        await StopEnginesAsync();
+        UserCredential? credential;
+        lock (_drivesLock)
+        {
+            _credentials.Remove(accountId, out credential);
+            foreach (var key in _pairDrives.Keys.Where(k => k.StartsWith(accountId + "|", StringComparison.Ordinal)).ToList())
+            {
+                _pairDrives[key].Dispose();
+                _pairDrives.Remove(key);
+            }
+        }
+        if (credential is not null)
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                await credential.RevokeTokenAsync(cts.Token);
+            }
+            catch (Exception ex) { _logger.LogWarning(ex, "Could not revoke access for account {Id} (continuing).", accountId); }
+        }
+        TryDeleteFile(PathHelper.Expand(account.TokenStorePath));
+
+        var removed = AccountRegistry.Remove(_config, accountId);
+        var store = CreateStateStore();
+        await store.InitializeAsync();
+        foreach (var pair in removed) await store.DeletePairAsync(pair.Id);
+        await SaveConfigQuietlyAsync();
+        _logger.LogInformation("Account {Id} disconnected; {Count} pair(s) removed.", accountId, removed.Count);
+
+        _driveService = DriveForAccount(_config.Accounts[0].Id) ?? _driveService;
+        _lastAccountFetch = DateTime.MinValue;
+        if (_driveService is GoogleDriveService primary)
+            await StartEnginesAsync(primary, new GlobFilter(), new AtomicFileWriter(CreateLogger<AtomicFileWriter>()), _engineCts.Token);
+        PushStatus();
+    }
+
+    // =========================================================================
+    // Settings + auto-update (1.3)
+    // =========================================================================
+
+    private SettingsForm? _settings;
+
+    private void ShowSettings(string page = "Accounts")
+    {
+        if (_settings is not null && !_settings.IsDisposed) { _settings.Activate(); return; }
+        _settings = new SettingsForm(new SettingsHost
+        {
+            LoadConfig = () => File.Exists(ConfigPath)
+                ? JsonSerializer.Deserialize<SyncConfig>(File.ReadAllText(ConfigPath), JsonOpts) ?? _config
+                : _config,
+            // Normal write: the config watcher restarts the engines with the new settings.
+            SaveConfig = c => File.WriteAllText(ConfigPath, JsonSerializer.Serialize(c, WriteOpts)),
+            AddAccount = AddAccountAsync,
+            DisconnectAccount = DisconnectAccountByIdAsync,
+            AddFolder = AddSyncFolder,
+            CheckForUpdatesNow = () => CheckForUpdateAsync(interactive: true),
+        }, page);
+        _settings.FormClosed += (_, _) => _settings = null;
+        _settings.Show();
+    }
+
+    private static readonly HttpClient UpdateHttp = new() { Timeout = TimeSpan.FromMinutes(10) };
+
+    private async Task UpdateLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromMinutes(2), ct);
+            while (!ct.IsCancellationRequested)
+            {
+                if (_config.CheckForUpdates) await CheckForUpdateAsync(interactive: false);
+                await Task.Delay(TimeSpan.FromHours(24), ct);
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private async Task<string> CheckForUpdateAsync(bool interactive)
+    {
+        try
+        {
+            var checker = new UpdateChecker(UpdateHttp, _logger);
+            var current = UpdateChecker.TryParseTag(AppInfo.Version, out var v) ? v : new Version(0, 0, 0);
+            var update = await checker.CheckAsync(current);
+            if (update is null)
+            {
+                _logger.LogInformation("Update check: SyncIt {Version} is up to date.", AppInfo.Version);
+                return $"SyncIt {AppInfo.Version} is up to date.";
+            }
+            _availableUpdate = update;
+            _logger.LogInformation("Update available: {Version}.", update.Version.ToString(3));
+            InvokeUI(() =>
+            {
+                if (_updateItem is not null) { _updateItem.Text = $"Install update {update.Version.ToString(3)}..."; _updateItem.Visible = true; }
+                if (!interactive)
+                    ShowBalloon("SyncIt update available", $"Version {update.Version.ToString(3)} is ready. Click to install.", ToolTipIcon.Info);
+            });
+            if (interactive) InvokeUI(() => _ = InstallUpdateAsync());
+            return $"Version {update.Version.ToString(3)} is available.";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogInformation("Update check failed: {Message}", ex.Message);
+            return "Could not check for updates: " + ex.Message;
+        }
+    }
+
+    private bool _installingUpdate;
+
+    private async Task InstallUpdateAsync()
+    {
+        var update = _availableUpdate;
+        if (update is null || _installingUpdate) return;
+        if (MessageBox.Show($"Install SyncIt {update.Version.ToString(3)} now?\n\nSyncIt downloads the installer from GitHub, checks it against the release's SHA256SUMS, then restarts. Your sign-in, folders and settings are kept.",
+                "SyncIt update", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+        _installingUpdate = true;
+        try
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "SyncIt-update");
+            var setup = await new UpdateChecker(UpdateHttp, _logger).DownloadVerifiedAsync(update, dir);
+            _logger.LogInformation("Starting installer for {Version}.", update.Version.ToString(3));
+            Process.Start(new ProcessStartInfo(setup, "/SILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER /RELAUNCH=1") { UseShellExecute = true });
+            OnExit(this, EventArgs.Empty);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Update install failed.");
+            MessageBox.Show("The update could not be installed:\n" + ex.Message, "SyncIt update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally { _installingUpdate = false; }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); } catch (IOException) { } catch (UnauthorizedAccessException) { }
     }
 
     private Task StartEnginesAsync(
@@ -321,6 +587,12 @@ public sealed class SyncItApp : ApplicationContext
     {
         foreach (var pair in SyncPairPlanner.EnabledUnique(_config.SyncPairs))
         {
+            var pairDrive = ResolveDrive(pair);
+            if (pairDrive is null)
+            {
+                _logger.LogWarning("Pair '{Id}' skipped: its Google account is not signed in.", pair.Id);
+                continue;
+            }
             var stateStore = CreateStateStore();
             await stateStore.InitializeAsync(ct);
 
@@ -331,7 +603,7 @@ public sealed class SyncItApp : ApplicationContext
             var safetyValidator = new DeletionSafetyValidator(_config, stateStore, deletionJournal, CreateLogger<DeletionSafetyValidator>());
             var deletionCoord   = new DeletionCoordinator(
                 _config, safetyValidator, deletionJournal, trashManager,
-                driveService, stateStore, atomicWriter, CreateLogger<DeletionCoordinator>(),
+                pairDrive, stateStore, atomicWriter, CreateLogger<DeletionCoordinator>(),
                 _activityLog);
 
             deletionCoord.DeletionFreezeTriggered += OnDeletionFreezeTriggered;
@@ -342,7 +614,7 @@ public sealed class SyncItApp : ApplicationContext
             var retryTracker  = new FailedOperationTracker(_config, CreateLogger<FailedOperationTracker>());
 
             var engine = new SyncEngine(
-                pair, _config, driveService, stateStore, conflictRes,
+                pair, _config, pairDrive, stateStore, conflictRes,
                 deletionCoord, globFilter, changeQueue, safetyValidator,
                 atomicWriter, CreateLogger<SyncEngine>(), _overlayStore, _activityLog, retryTracker);
 
@@ -351,6 +623,7 @@ public sealed class SyncItApp : ApplicationContext
 
             lock (_enginesLock) { _engines.Add(engine); }
             await engine.StartAsync(pair, ct);
+            if (pair.Paused || _globalPaused) engine.Pause();
         }
 
         _logger.LogInformation("Started {Count} sync engine(s).", _engines.Count);
@@ -512,6 +785,9 @@ public sealed class SyncItApp : ApplicationContext
         _pauseItem = new ToolStripMenuItem("Pause Syncing", null, OnPauseResume);
         _menu.Items.Add(_pauseItem);
         _menu.Items.Add("Account...",         null, OnSwitchAccount);
+        _menu.Items.Add("Settings...",        null, (_, _) => ShowSettings());
+        _updateItem = new ToolStripMenuItem("Install update...", null, async (_, _) => await InstallUpdateAsync()) { Visible = false };
+        _menu.Items.Add(_updateItem);
         _menu.Items.Add(new ToolStripSeparator());
 
         _autoStartItem = new ToolStripMenuItem("Start with Windows", null, OnToggleAutoStart)
@@ -536,6 +812,7 @@ public sealed class SyncItApp : ApplicationContext
         };
 
         _notifyIcon.DoubleClick += (_, _) => ShowDashboard();
+        _notifyIcon.BalloonTipClicked += async (_, _) => { if (_availableUpdate is not null) await InstallUpdateAsync(); };
     }
 
     // =========================================================================
@@ -601,7 +878,8 @@ public sealed class SyncItApp : ApplicationContext
             showAccountForm:  () => ShowAccountForm(),
             addSyncFolder:    () => AddSyncFolder(),
             selectSubfolders:  pairId => SelectSubfolders(pairId),
-            fetchAllActivity: async () => _activityLog is null ? null : await _activityLog.GetRecentAsync(500)
+            fetchAllActivity: async () => _activityLog is null ? null : await _activityLog.GetRecentAsync(500),
+            showSettings:     () => ShowSettings()
         );
         _dashboard.FormClosed += (_, _) => _dashboard = null;
         _dashboard.Show();
@@ -879,17 +1157,26 @@ public sealed class SyncItApp : ApplicationContext
                 RemoteFolderName = "My Drive",
                 Enabled          = false,
             };
+
+            // Which account and which drive (My Drive or a shared drive)?
+            AccountRegistry.Migrate(config, p => CredentialHelper.TokenExists(PathHelper.Expand(p)));
+            using (var picker = new RemoteLocationDialog(config.Accounts, id => DriveForAccount(id)))
+            {
+                if (picker.ShowDialog() != DialogResult.OK || picker.AccountId is null) return;
+                AccountRegistry.ApplyLocation(pair, picker.AccountId, picker.SharedDrive);
+            }
+            var pickerDrive = ResolveDrive(pair) ?? _driveService;
             _suppressConfigReload = true;
             try
             {
                 config.SyncPairs.Add(pair);
                 File.WriteAllText(ConfigPath, JsonSerializer.Serialize(config, WriteOpts));
 
-                using (var form = new SelectFoldersForm(pair, ConfigPath, _driveService))
+                using (var form = new SelectFoldersForm(pair, ConfigPath, pickerDrive))
                     form.ShowDialog();
 
                 var start = MessageBox.Show(
-                    $"Start syncing now?\n\n{selectedPath}  <->  Google Drive\n\n" +
+                    $"Start syncing now?\n\n{selectedPath}  <->  {pair.RemoteFolderName}\n\n" +
                     "Files that already exist on both sides are matched by name and content; they are not copied again.",
                     "SyncIt", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
 
@@ -940,15 +1227,23 @@ public sealed class SyncItApp : ApplicationContext
         _engineCts.Cancel();
         await Task.Run(StopEnginesAsync);
 
-        // 2. Delete the token file directly to ensure a clean re-auth
-        var tokenPath = PathHelper.Expand(_config.TokenStorePath);
+        // 2. Delete the primary account's token file directly to ensure a clean re-auth
+        var primaryAccount = _config.Accounts.FirstOrDefault();
+        var rawTokenPath = primaryAccount?.TokenStorePath ?? _config.TokenStorePath;
+        var tokenPath = PathHelper.Expand(rawTokenPath);
         if (File.Exists(tokenPath))
             File.Delete(tokenPath);
 
         // 3. Re-authorize with account picker (forces Google account selection prompt)
-        var oauthService = new OAuthService(_config, CreateLogger<OAuthService>());
+        var oauthService = new OAuthService(_config, rawTokenPath, CreateLogger<OAuthService>());
         _oauthService = oauthService;
         var credential = await Task.Run(() => oauthService.ReauthorizeAsync());
+        lock (_drivesLock)
+        {
+            if (primaryAccount is not null) _credentials[primaryAccount.Id] = credential;
+            foreach (var d in _pairDrives.Values) d.Dispose();
+            _pairDrives.Clear();
+        }
 
         // 4. Recreate Drive service with new credential
         (_driveService as IDisposable)?.Dispose();
@@ -958,6 +1253,7 @@ public sealed class SyncItApp : ApplicationContext
         // 5. Fetch new account info immediately
         _accountInfo = await Task.Run(() => driveService.GetAccountInfoAsync());
         _lastAccountFetch = DateTime.UtcNow;
+        if (primaryAccount is not null) { primaryAccount.Email = _accountInfo.Email; await SaveConfigQuietlyAsync(); }
 
         // 6. Reset stale state databases (old account's file IDs are invalid)
         // Dispose activity log to release its SQLite connection

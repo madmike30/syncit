@@ -33,9 +33,18 @@ public sealed class OAuthService : IOAuthService
     private static readonly string[] Scopes = { DriveService.Scope.Drive };
     private const string UserId = "syncit-user";
 
+    private readonly string _tokenPath;
+
     public OAuthService(SyncConfig config, ILogger<OAuthService> logger)
+        : this(config, config.TokenStorePath, logger)
+    {
+    }
+
+    /// <summary>Per-account service: tokens are read from / written to <paramref name="tokenPath"/> (DPAPI-encrypted).</summary>
+    public OAuthService(SyncConfig config, string tokenPath, ILogger<OAuthService> logger)
     {
         _config = config;
+        _tokenPath = tokenPath;
         _logger = logger;
     }
 
@@ -50,7 +59,7 @@ public sealed class OAuthService : IOAuthService
     public async Task<UserCredential> ReauthorizeAsync(CancellationToken ct = default)
     {
         _credential = null;
-        var dataStore = new DpapiDataStore(_config.TokenStorePath, _logger);
+        var dataStore = new DpapiDataStore(_tokenPath, _logger);
         await dataStore.DeleteAsync<TokenResponse>(UserId);
         return await AuthorizeInternalAsync(forceAccountPicker: true, ct);
     }
@@ -60,7 +69,7 @@ public sealed class OAuthService : IOAuthService
         var client = OAuthClientResolver.ResolveForApp();
         var (clientId, clientSecret) = (client.ClientId, client.ClientSecret);
         _logger.LogInformation("Using {Source} Google OAuth client.", client.Source);
-        var dataStore = new DpapiDataStore(_config.TokenStorePath, _logger);
+        var dataStore = new DpapiDataStore(_tokenPath, _logger);
         var clientSecrets = new ClientSecrets { ClientId = clientId, ClientSecret = clientSecret };
 
         try

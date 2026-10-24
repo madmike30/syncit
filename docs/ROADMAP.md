@@ -1,15 +1,15 @@
 # SyncIt roadmap
 
-## P2 — Multiple Google accounts (planned, not implemented)
+## Done
+- **1.3.0** — multiple Google accounts at once (per-account sign-in and Disconnect), shared drives, auto-update with SHA-256 verification, Settings window.
+- **1.2.0** — sync engine hardening (duplicates, lookup-before-create, settle/temp files, renames, long paths, token expiry, Unicode, rate limits).
 
-Today SyncIt signs in to one Google account and every sync pair uses it.
+## Next (P2)
+- **Code signing** — sign releases so Windows SmartScreen stops warning (until then: More info → Run anyway, and verify with `SHA256SUMS`).
+- **Explorer status icons for every folder** — today the overlay covers the first enabled folder.
+- **Account per folder in the dashboard** — show the account e-mail on each folder card.
+- **Google verification of the built-in sign-in** — removes the "unverified app" screen and the user cap.
 
-Plan:
-1. **Per-account token store** – key `token.bin` by account id (`tokens/<sub>.bin`), migrate the current token to the signed-in account on first run.
-2. **`SyncPair.AccountId`** – new optional field; existing pairs get the current account on load.
-3. **Drive service per account** – `GoogleDriveService` instances cached by account; `SyncEngine` already receives its service via the constructor, so the engine itself needs no changes.
-4. **UI** – *Accounts* page (add / sign out / remove); account picker in *Add folder*; account shown per pair on the dashboard.
-5. **Explorer** – one cloud sync root per pair already; register with the account e-mail in the display name.
-6. **Safety** – signing out of an account pauses (never deletes) its pairs; removing an account requires removing its pairs first.
-
-Tests: token migration, pair→account resolution, sign-out pauses only that account's engines.
+## Later (P3)
+- Selective sync inside shared drives (today a shared drive is synced as a whole, minus exclude patterns).
+- Per-folder bandwidth limits and schedules.

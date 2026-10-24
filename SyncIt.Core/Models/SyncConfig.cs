@@ -61,4 +61,10 @@ public class SyncConfig
     public int RetryMaxDelaySeconds { get; set; } = 300;
 
     public List<SyncPair> SyncPairs { get; set; } = new();
+
+    /// <summary>Signed-in Google accounts (1.3+). Each has its own DPAPI-encrypted token file.</summary>
+    public List<GoogleAccount> Accounts { get; set; } = new();
+
+    /// <summary>Check GitHub Releases for new versions (1.3+). Users can turn this off in Settings.</summary>
+    public bool CheckForUpdates { get; set; } = true;
 }

@@ -215,6 +215,15 @@ public sealed class FileStateStore : IFileStateStore
         return Convert.ToInt32(result);
     }
 
+    public async Task DeletePairAsync(string syncPairId)
+    {
+        await using var conn = await OpenAsync();
+        await using var cmd  = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM file_records WHERE sync_pair_id=@p; DELETE FROM pair_state WHERE sync_pair_id=@p;";
+        cmd.Parameters.AddWithValue("@p", syncPairId);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
     // -------------------------------------------------------------------------
     // Pair-level state
     // -------------------------------------------------------------------------

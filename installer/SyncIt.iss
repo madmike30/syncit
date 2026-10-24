@@ -54,5 +54,13 @@ Name: "{autodesktop}\SyncIt"; Filename: "{app}\SyncIt.exe"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\SyncIt.exe"; Description: "Open SyncIt now"; Flags: nowait postinstall skipifsilent
+; In-app updates run the installer with /SILENT /RELAUNCH=1 so SyncIt starts again afterwards.
+Filename: "{app}\SyncIt.exe"; Flags: nowait; Check: ShouldRelaunch
 
 ; Settings and tokens in %APPDATA%\SyncIt are kept on uninstall on purpose (your sync state).
+
+[Code]
+function ShouldRelaunch: Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
+end;

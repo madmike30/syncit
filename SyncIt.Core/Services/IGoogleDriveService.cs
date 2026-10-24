@@ -104,6 +104,9 @@ public interface IGoogleDriveService
     /// </summary>
     Task<DriveAccountInfo> GetAccountInfoAsync(CancellationToken ct = default);
 
+    /// <summary>Shared drives the account is a member of (empty when none).</summary>
+    Task<IReadOnlyList<SharedDriveInfo>> ListSharedDrivesAsync(CancellationToken ct = default);
+
     /// <summary>
     /// Find a regular (non-folder, non-Google-Doc, not trashed) file by exact name in a folder.
     /// Used before creating a file so an existing one is reused instead of duplicated.

@@ -17,6 +17,15 @@ public class SyncPair
 
     public bool Enabled { get; set; } = true;
 
+    /// <summary>Google account this pair syncs with (<see cref="GoogleAccount.Id"/>). Null = the first account (pre-1.3 configs).</summary>
+    public string? AccountId { get; set; }
+
+    /// <summary>Shared drive ID when the remote folder lives in a shared drive; null = My Drive.</summary>
+    public string? SharedDriveId { get; set; }
+
+    /// <summary>Paused pairs keep their state but do not sync until resumed.</summary>
+    public bool Paused { get; set; }
+
     /// <summary>Convert Google Docs/Sheets/Slides to Office formats when downloading.</summary>
     public bool ExportGoogleDocs { get; set; } = true;
 

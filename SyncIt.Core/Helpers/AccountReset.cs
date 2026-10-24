@@ -26,6 +26,7 @@ public static class AccountReset
         }
 
         Delete(PathHelper.Expand(config.TokenStorePath));
+        foreach (var account in config.Accounts) Delete(PathHelper.Expand(account.TokenStorePath));
         foreach (var db in new[] { config.StateDbPath, config.DeleteJournalPath, config.ActivityLogPath })
         {
             var path = PathHelper.Expand(db);
@@ -38,12 +39,14 @@ public static class AccountReset
             var root = JsonNode.Parse(File.ReadAllText(configPath),
                 documentOptions: new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true })
                 as JsonObject ?? new JsonObject();
-            foreach (var key in root.Select(kv => kv.Key).Where(k => k.Equals("SyncPairs", StringComparison.OrdinalIgnoreCase)).ToList())
+            foreach (var key in root.Select(kv => kv.Key).Where(k => k.Equals("SyncPairs", StringComparison.OrdinalIgnoreCase) || k.Equals("Accounts", StringComparison.OrdinalIgnoreCase)).ToList())
                 root.Remove(key);
             root["SyncPairs"] = new JsonArray();
+            root["Accounts"] = new JsonArray();
             File.WriteAllText(configPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
         }
         config.SyncPairs.Clear();
+        config.Accounts.Clear();
         return removed;
     }
 }

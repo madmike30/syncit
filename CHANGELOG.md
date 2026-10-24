@@ -1,5 +1,12 @@
-﻿# Changelog
+# Changelog
 
+## 1.3.0 - 2026-10-24
+- **Multiple Google accounts at the same time.** Add accounts in Settings → Accounts; each sync folder belongs to one account and each account has its own DPAPI-encrypted sign-in and its own Disconnect (files on the PC and in Drive are never deleted). Your existing sign-in and folder are migrated automatically - no new sign-in, no re-sync.
+- **Shared drives.** When you add a folder you choose the account and either My Drive or one of its shared drives.
+- **Auto-update.** SyncIt checks GitHub Releases once a day, shows the update in the tray, downloads the installer, verifies it against the release's SHA256SUMS and installs only after you confirm. Turn it off in Settings → Updates.
+- **New Settings window** (Windows 11 style, light by default): accounts, folders (exclude patterns, conflict rule, pause per folder), appearance, updates, start with Windows and bandwidth limits.
+- Changing a folder's account or drive now resets only that folder's sync state (other folders keep theirs).
+- README: honest comparison table with Google Drive for desktop and a "Windows SmartScreen warning" section.
 ## 1.2.0 - 2026-10-24
 Sync engine hardening (review recommendations):
 - **Duplicate names on Drive are detected.** Google Drive allows two files with the same name in one folder; SyncIt now warns (log + Activity) and syncs the newest one instead of picking one at random.

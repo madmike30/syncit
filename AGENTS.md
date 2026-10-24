@@ -63,6 +63,36 @@ Google Apps files (Docs, Sheets, etc.) use Export API, not Download. `GoogleDocE
 - `FailedOperationTracker` caches counts instead of enumerating on every query
 - `StopEnginesAsync` snapshots engine lists to avoid "collection modified" during shutdown
 
+### Multiple accounts (1.3)
+`SyncConfig.Accounts` lists signed-in Google accounts; each `GoogleAccount` has its own DPAPI token file
+(`%APPDATA%\SyncIt\accounts\<id>.bin`; the pre-1.3 account keeps `token.bin` as account `default`).
+`SyncPair.AccountId` binds a pair to an account; `AccountRegistry` holds the pure logic (migration, resolution,
+add/remove, changed-remote detection). `SyncItApp` keeps one `UserCredential` per account and one
+`GoogleDriveService` per (account, shared drive). Never re-key pair IDs: `state.db` is keyed by pair ID.
+
+### Shared drives (1.3)
+`SyncPair.SharedDriveId` + `RemoteFolderId = <drive id>`. `GoogleDriveService(…, sharedDriveId)` scopes listings and
+the Changes API to that drive; every request goes through `DriveRequestScope.Apply` (supportsAllDrives etc.).
+The legacy "move non-root pairs to My Drive root" migration must skip shared-drive pairs
+(`AccountRegistry.NeedsLegacyRootMigration`).
+
+### Auto-update (1.3)
+`UpdateChecker` reads `releases/latest` (published only), offers only GitHub HTTPS assets with a `SHA256SUMS`
+entry, and `DownloadVerifiedAsync` deletes any installer whose hash does not match. The app runs the installer with
+`/SILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER /RELAUNCH=1` only after the user confirms. Opt-out:
+`SyncConfig.CheckForUpdates`.
+
+### Settings window (1.3)
+`Forms/SettingsForm` (nav + pages) talks to the app only through `SettingsHost`; pure helpers live in
+`PairSettingsEditor`. Saving writes `syncit.json`; the config watcher restarts engines, resetting only pairs whose
+remote changed.
+
+## Release rules
+- Bump `Directory.Build.props`, update README (features + honest comparison table), CHANGELOG, ROADMAP and this file.
+- Tag `vX.Y.Z` → the release workflow builds a DRAFT with setup.exe, portable zip and SHA256SUMS.
+- Never move or force-push a tag; if a release run fails, fix and release the next patch version.
+- Commits use the noreply author; run gitleaks before pushing.
+
 ## Build & Run
 
 ```bash
@@ -128,7 +158,7 @@ Poll timer → `RunSyncCycleAsync` → `ListChangesAsync` → `GetRelativePathAs
 When both local and remote changed since baseline: `ConflictResolver` applies the configured strategy (default: `RemoteWins`). Options: `LocalWins`, `RemoteWins`, `KeepBoth` (renames local with `.conflict` suffix), `NoConflict`.
 
 ### Account switching & state DB lifecycle
-`SwitchAccountAsync` in SyncItApp: stop engines → delete token → re-authorize (with account picker) → dispose old DriveService → **reset all state DBs** (state.db, delete-journal.db, activity.db) via `SqliteConnection.ClearAllPools()` + file deletion → validate new account's access to configured Drive folder → recreate ActivityLog + CloudSyncProvider → restart engines. State DBs are also reset when the Drive folder changes (config watcher detects `RemoteFolderId` change).
+`SwitchAccountAsync` in SyncItApp: stop engines → delete token → re-authorize (with account picker) → dispose old DriveService → **reset all state DBs** (state.db, delete-journal.db, activity.db) via `SqliteConnection.ClearAllPools()` + file deletion → validate new account's access to configured Drive folder → recreate ActivityLog + CloudSyncProvider → restart engines. Since 1.3 a config change resets only the pairs whose account, shared drive or `RemoteFolderId` changed (`AccountRegistry.PairsWithChangedRemote` + `IFileStateStore.DeletePairAsync`). Account switching acts on the primary (first) account.
 
 ### Path resolution
 - **Fast path** (`ListFilesWithPathsAsync`): Builds relative paths during folder traversal — no per-file API calls. Used for initial sync and reconciliation of new folders. 40x faster than `GetRelativePathAsync` for bulk listing.

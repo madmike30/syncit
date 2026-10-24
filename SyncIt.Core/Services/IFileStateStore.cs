@@ -43,6 +43,9 @@ public interface IFileStateStore : IDisposable
     /// <summary>Count baseline records for a pair/side (fast COUNT(*) query).</summary>
     Task<int> CountRecordsAsync(string syncPairId, SyncSide side);
 
+    /// <summary>Forgets all sync state of one pair (used when its account or remote changes, or it is removed).</summary>
+    Task DeletePairAsync(string syncPairId);
+
     // -------------------------------------------------------------------------
     // Pair-level state (page tokens, sync timestamps)
     // -------------------------------------------------------------------------

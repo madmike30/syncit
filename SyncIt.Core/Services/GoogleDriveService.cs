@@ -38,7 +38,14 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
     }
 
     public GoogleDriveService(UserCredential credential, ILogger<GoogleDriveService> logger, SyncConfig? config)
+        : this(credential, logger, config, null)
     {
+    }
+
+    /// <param name="sharedDriveId">When set, this instance works inside that shared drive (listing, changes).</param>
+    public GoogleDriveService(UserCredential credential, ILogger<GoogleDriveService> logger, SyncConfig? config, string? sharedDriveId)
+    {
+        SharedDriveId = string.IsNullOrWhiteSpace(sharedDriveId) ? null : sharedDriveId;
         _logger = logger;
         _config = config;
         _drive  = new DriveService(new BaseClientService.Initializer
@@ -50,6 +57,9 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
         _uploadRetryPolicy   = RetryHelper.CreateDrivePolicy(logger, config?.UploadRetryPolicy);
         _downloadRetryPolicy = RetryHelper.CreateDrivePolicy(logger, config?.DownloadRetryPolicy);
     }
+
+    /// <summary>Shared drive this instance is scoped to, or null for My Drive.</summary>
+    public string? SharedDriveId { get; }
 
     private long UploadBytesPerSecond => (_config?.MaxUploadKBps ?? 0) * 1024L;
     private long DownloadBytesPerSecond => (_config?.MaxDownloadKBps ?? 0) * 1024L;
@@ -73,7 +83,7 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
             request.Q           = $"'{folderId}' in parents and trashed = false";
             request.Fields      = ListFields;
             request.PageSize    = 1000;
-            request.IncludeItemsFromAllDrives = false;
+            DriveRequestScope.Apply(request, SharedDriveId);
             if (pageToken is not null) request.PageToken = pageToken;
 
             var result = await _retryPolicy.ExecuteAsync(() => request.ExecuteAsync(ct));
@@ -119,7 +129,7 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
             request.Q           = $"'{folderId}' in parents and trashed = false";
             request.Fields      = ListFields;
             request.PageSize    = 1000;
-            request.IncludeItemsFromAllDrives = false;
+            DriveRequestScope.Apply(request, SharedDriveId);
             if (pageToken is not null) request.PageToken = pageToken;
 
             var result = await _retryPolicy.ExecuteAsync(() => request.ExecuteAsync(ct));
@@ -160,6 +170,7 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
     public async Task DownloadFileAsync(string fileId, Stream destination, IProgress<long>? progress, CancellationToken ct = default)
     {
         var request = _drive.Files.Get(fileId);
+        DriveRequestScope.Apply(request, SharedDriveId);
         request.Fields = FileFields;
 
         if (progress is not null)
@@ -219,6 +230,7 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
             await using (stream)
             {
                 var request = _drive.Files.Create(fileMetadata, stream, mimeType);
+                DriveRequestScope.Apply(request, SharedDriveId);
                 request.Fields = FileFields;
 
                 if (progress is not null)
@@ -251,6 +263,7 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
             await using (stream)
             {
                 var request = _drive.Files.Update(new DriveFile(), fileId, stream, mimeType);
+                DriveRequestScope.Apply(request, SharedDriveId);
                 request.Fields = FileFields;
 
                 if (progress is not null)
@@ -277,6 +290,7 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
             await _retryPolicy.ExecuteAsync(() =>
             {
                 var request = _drive.Files.Update(update, fileId);
+                DriveRequestScope.Apply(request, SharedDriveId);
                 request.Fields = "id,trashed";
                 return request.ExecuteAsync(ct);
             });
@@ -295,8 +309,9 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
 
     public async Task<string> GetStartPageTokenAsync(CancellationToken ct = default)
     {
-        var result = await _retryPolicy.ExecuteAsync(() =>
-            _drive.Changes.GetStartPageToken().ExecuteAsync(ct));
+        var request = _drive.Changes.GetStartPageToken();
+        DriveRequestScope.Apply(request, SharedDriveId);
+        var result = await _retryPolicy.ExecuteAsync(() => request.ExecuteAsync(ct));
         return result.StartPageTokenValue;
     }
 
@@ -313,7 +328,7 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
             request.Fields     = "nextPageToken,newStartPageToken,changes(fileId,removed,file(" + FileFields + "))";
             request.PageSize   = 200;
             request.Spaces     = "drive";
-            request.IncludeItemsFromAllDrives = false;
+            DriveRequestScope.Apply(request, SharedDriveId);
 
             var result = await _retryPolicy.ExecuteAsync(() => request.ExecuteAsync(ct));
 
@@ -356,6 +371,7 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
     public async Task<DriveFile?> FindFileAsync(string parentFolderId, string name, CancellationToken ct = default)
     {
         var request = _drive.Files.List();
+        DriveRequestScope.Apply(request, SharedDriveId);
         request.Q = $"'{parentFolderId}' in parents and name = '{EscapeDriveQuery(name)}' and trashed = false " +
                     "and not mimeType contains 'application/vnd.google-apps.'";
         request.Fields = $"files({FileFields})";
@@ -371,6 +387,7 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
     {
         var current = await GetFileAsync(fileId, ct) ?? throw new FileNotFoundException($"Drive file {fileId} not found.");
         var request = _drive.Files.Update(new DriveFile { Name = newName }, fileId);
+        DriveRequestScope.Apply(request, SharedDriveId);
         request.Fields = FileFields;
         if (newParentId == "root")
             newParentId = (await GetFileAsync("root", ct))?.Id ?? newParentId;
@@ -388,6 +405,7 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
         try
         {
             var request = _drive.Files.Get(fileId);
+            DriveRequestScope.Apply(request, SharedDriveId);
             request.Fields = FileFields;
             return await _retryPolicy.ExecuteAsync(() => request.ExecuteAsync(ct));
         }
@@ -467,6 +485,7 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
             {
                 // Re-check inside the lock so concurrent uploads cannot create duplicates.
                 var listRequest = _drive.Files.List();
+                DriveRequestScope.Apply(listRequest, SharedDriveId);
                 listRequest.Q        = $"'{currentParentId}' in parents and name = '{EscapeDriveQuery(part)}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false";
                 listRequest.Fields   = "files(id,name,parents)";
                 listRequest.PageSize = 1;
@@ -490,6 +509,7 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
                 var created = await _retryPolicy.ExecuteAsync(() =>
                 {
                     var req = _drive.Files.Create(folder);
+                    DriveRequestScope.Apply(req, SharedDriveId);
                     req.Fields = "id,name,parents";
                     return req.ExecuteAsync(ct);
                 });
@@ -516,6 +536,7 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
         do
         {
             var request = _drive.Files.List();
+            DriveRequestScope.Apply(request, SharedDriveId);
             request.Q = $"'{folderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false";
             request.Fields = "nextPageToken,files(id,name)";
             request.PageSize = 200;
@@ -541,6 +562,24 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
         while (pageToken is not null);
 
         return result;
+    }
+
+    public async Task<IReadOnlyList<SharedDriveInfo>> ListSharedDrivesAsync(CancellationToken ct = default)
+    {
+        var result = new List<SharedDriveInfo>();
+        string? pageToken = null;
+        do
+        {
+            var request = _drive.Drives.List();
+            request.PageSize = 100;
+            request.Fields = "nextPageToken,drives(id,name)";
+            if (pageToken is not null) request.PageToken = pageToken;
+            var page = await _retryPolicy.ExecuteAsync(() => request.ExecuteAsync(ct));
+            foreach (var d in page.Drives ?? []) result.Add(new SharedDriveInfo(d.Id!, d.Name ?? d.Id!));
+            pageToken = page.NextPageToken;
+        }
+        while (pageToken is not null);
+        return result.OrderBy(d => d.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
     }
 
     public async Task<DriveAccountInfo> GetAccountInfoAsync(CancellationToken ct = default)
