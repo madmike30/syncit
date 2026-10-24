@@ -61,7 +61,8 @@ publish.bat          # creates the standalone ./publish/SyncIt.exe
 ### First run
 
 1. Double-click `SyncIt.exe`
-2. Sign in with Google when the browser opens
+2. Paste your Google OAuth Client ID and Secret
+3. Sign in with Google when the browser opens
 4. Choose your local sync folder and Drive folder
 5. The tray icon appears — syncing begins
 
