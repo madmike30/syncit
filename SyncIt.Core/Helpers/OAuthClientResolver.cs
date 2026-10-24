@@ -20,7 +20,7 @@ public static class OAuthClientResolver
     /// <summary>Pure selection logic (unit-tested).</summary>
     public static OAuthClient? Resolve((string Id, string Secret)? custom, string? builtInId, string? builtInSecret)
     {
-        if (custom is { } c && OAuthClientValidator.ValidateClientId(c.Id) is null && !string.IsNullOrWhiteSpace(c.Secret))
+        if (custom is { } c && OAuthClientValidator.ValidateClientId(c.Id?.Trim()) is null && !string.IsNullOrWhiteSpace(c.Secret))
             return new OAuthClient(c.Id.Trim(), c.Secret.Trim(), OAuthClientSource.Custom);
 
         if (IsValidBuiltIn(builtInId, builtInSecret))
@@ -29,8 +29,10 @@ public static class OAuthClientResolver
         return null;
     }
 
+    // Trim: build secrets set from a shell often carry a trailing newline, which made a
+    // perfectly good built-in client look invalid (sign-in fell back to the own-client page).
     public static bool IsValidBuiltIn(string? id, string? secret) =>
-        OAuthClientValidator.ValidateClientId(id) is null && !string.IsNullOrWhiteSpace(secret);
+        OAuthClientValidator.ValidateClientId(id?.Trim()) is null && !string.IsNullOrWhiteSpace(secret);
 
     /// <summary>Reads the build-time client from assembly metadata.</summary>
     public static (string? Id, string? Secret) ReadBuiltIn(Assembly? assembly = null)

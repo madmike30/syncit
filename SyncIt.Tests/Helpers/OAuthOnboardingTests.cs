@@ -5,6 +5,17 @@ namespace SyncIt.Tests.Helpers;
 
 public class OAuthClientResolverTests
 {
+    [Fact]
+    public void BuiltInClient_WithTrailingNewline_IsStillUsed()
+    {
+        const string id = "111111111111-aaaaaaaaaaaaaaaaaaaa.apps.googleusercontent.com\n";
+        OAuthClientResolver.IsValidBuiltIn(id, "GOCSPX-secret\r\n").Should().BeTrue();
+        var client = OAuthClientResolver.Resolve(null, id, "GOCSPX-secret\r\n");
+        client!.Source.Should().Be(OAuthClientSource.BuiltIn);
+        client.ClientId.Should().Be("111111111111-aaaaaaaaaaaaaaaaaaaa.apps.googleusercontent.com");
+        client.ClientSecret.Should().Be("GOCSPX-secret");
+    }
+
     private const string Id1 = "111111111111-aaaaaaaaaaaaaaaaaaaa.apps.googleusercontent.com";
     private const string Id2 = "222222222222-bbbbbbbbbbbbbbbbbbbb.apps.googleusercontent.com";
 

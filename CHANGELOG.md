@@ -1,5 +1,8 @@
 ﻿# Changelog
 
+## 1.1.3 - 2026-10-24
+- **Fixed one-click sign-in falling back to the own-client page.** The built-in client ID baked into release builds had a trailing newline (from how the build secret was set), so the app treated it as invalid. Values are now trimmed, the release check is strict, and the secrets were re-set without whitespace.
+
 ## 1.1.2 - 2026-10-24
 - **Fixed a crash when the sign-in window opened** ("unhandled exception" dialog). The app's UI thread was not STA (async top-level `Main`), so enabling drag-and-drop on the sign-in window threw. `Main` is now `[STAThread]`, drag-and-drop is only enabled on STA threads, and background code always shows windows on the UI thread.
 - Unexpected errors now show a short, friendly message (and write a crash report) instead of the raw WinForms dialog.

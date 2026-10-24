@@ -23,7 +23,8 @@ jobs:
           SYNCIT_GOOGLE_CLIENT_SECRET: ${{ secrets.SYNCIT_GOOGLE_CLIENT_SECRET }}
         shell: pwsh
         run: |
-          if ($env:SYNCIT_GOOGLE_CLIENT_ID -match '\.apps\.googleusercontent\.com$' -and $env:SYNCIT_GOOGLE_CLIENT_SECRET) { Write-Host 'Built-in Google client: PRESENT (one-click sign-in enabled)' }
+          if ($env:SYNCIT_GOOGLE_CLIENT_ID -cmatch '\A[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com\z' -and $env:SYNCIT_GOOGLE_CLIENT_SECRET -cmatch '\A\S+\z') { Write-Host 'Built-in Google client: PRESENT (one-click sign-in enabled)' }
+          elseif ($env:SYNCIT_GOOGLE_CLIENT_ID) { Write-Host '::warning::Built-in Google client: secrets have extra whitespace/newlines; re-set them with gh secret set NAME --body VALUE' }
           else { Write-Host '::warning::Built-in Google client: ABSENT (release will use bring-your-own-client mode)' }
       - name: Publish single-file exe
         env:
