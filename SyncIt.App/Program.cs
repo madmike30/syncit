@@ -27,7 +27,7 @@ var logDir = PathHelper.Expand(@"%APPDATA%\SyncIt\logs");
 Directory.CreateDirectory(logDir);
 
 Log.Logger = new LoggerConfiguration()
-    .MinimumLevel.Debug()
+    .MinimumLevel.Information()
     .MinimumLevel.Override("Microsoft", Serilog.Events.LogEventLevel.Warning)
     .Enrich.FromLogContext()
     .Enrich.WithThreadId()

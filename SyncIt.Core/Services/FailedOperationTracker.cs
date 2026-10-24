@@ -41,23 +41,29 @@ public sealed class FailedOperationTracker
             {
                 var op = new FailedOperation
                 {
-                    OriginalEvent = ev,
-                    AttemptCount = 1,
+                    OriginalEvent  = ev,
+                    AttemptCount   = 1,
                     LastAttemptUtc = DateTime.UtcNow,
-                    LastError = errorMessage,
+                    LastError      = errorMessage,
                 };
                 op.NextRetryUtc = ComputeNextRetry(op.AttemptCount);
-                op.IsExhausted = op.AttemptCount >= _config.MaxFileRetries;
+                op.IsExhausted  = op.AttemptCount >= _config.MaxFileRetries;
                 return op;
             },
             (_, existing) =>
             {
-                existing.AttemptCount++;
-                existing.LastAttemptUtc = DateTime.UtcNow;
-                existing.LastError = errorMessage;
-                existing.NextRetryUtc = ComputeNextRetry(existing.AttemptCount);
-                existing.IsExhausted = existing.AttemptCount >= _config.MaxFileRetries;
-                return existing;
+                // Create a new instance — AddOrUpdate may invoke the factory multiple times
+                // under contention, so mutating the existing object is a data race.
+                var updated = new FailedOperation
+                {
+                    OriginalEvent  = existing.OriginalEvent,
+                    AttemptCount   = existing.AttemptCount + 1,
+                    LastAttemptUtc = DateTime.UtcNow,
+                    LastError      = errorMessage,
+                };
+                updated.NextRetryUtc = ComputeNextRetry(updated.AttemptCount);
+                updated.IsExhausted  = updated.AttemptCount >= _config.MaxFileRetries;
+                return updated;
             });
 
         var failure = _failures[key];

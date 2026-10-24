@@ -108,7 +108,7 @@ public sealed class DeletionCoordinator : IDeletionCoordinator
             try
             {
                 record = await ExecuteSingleDeletionAsync(record, pair, ct);
-                await _journal.UpdateStatusAsync(record.Id, DeletionStatus.Executed, DateTime.UtcNow, record.TrashPath, ct);
+                await _journal.UpdateStatusAsync(record.Id, DeletionStatus.Executed, DateTime.UtcNow, record.TrashPath, ct: ct);
                 await _stateStore.MarkDeletedAsync(record.SyncPairId, record.Side, record.RelativePath);
 
                 _ = _activityLog?.RecordAsync(new ActivityRecord
@@ -154,8 +154,8 @@ public sealed class DeletionCoordinator : IDeletionCoordinator
 
         foreach (var del in frozen)
         {
-            // Unfreeze with 0 grace cycles so they execute on the next cycle
-            await _journal.UpdateStatusAsync(del.Id, DeletionStatus.Pending, ct: ct);
+            // Unfreeze with grace_cycles=0 so they execute on the next cycle
+            await _journal.UpdateStatusAsync(del.Id, DeletionStatus.Pending, resetGraceCycles: true, ct: ct);
             _logger.LogInformation("User approved frozen deletion: '{Path}'", del.RelativePath);
         }
     }
