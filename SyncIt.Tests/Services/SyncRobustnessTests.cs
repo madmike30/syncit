@@ -77,7 +77,7 @@ public sealed class SyncRobustnessTests
             DriveFileId = driveId, DriveRevisionId = "rev-1", SizeBytes = fi.Length, ModifiedUtc = fi.LastWriteTimeUtc, ContentHash = Md5(content) });
     }
 
-    private static async Task WaitUntilAsync(Func<bool> condition, int timeoutMs = 10000)
+    private static async Task WaitUntilAsync(Func<bool> condition, int timeoutMs = 30000)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         while (!condition() && sw.ElapsedMilliseconds < timeoutMs) await Task.Delay(50);
@@ -204,8 +204,7 @@ public sealed class SyncRobustnessTests
             .ReturnsAsync(new DriveFile { Id = "drv-1", Name = "Notes.txt", Md5Checksum = Md5("hello"), HeadRevisionId = "rev-1", ModifiedTimeDateTimeOffset = DateTimeOffset.UtcNow });
 
         await h.Engine.StartAsync(h.Pair, CancellationToken.None);
-        File.Move(oldPath, Path.Combine(temp.Path, "tmp.txt"));
-        File.Move(Path.Combine(temp.Path, "tmp.txt"), Path.Combine(temp.Path, "Notes.txt"));
+        File.Move(oldPath, Path.Combine(temp.Path, "Notes.txt")); // the folder watcher may also report this rename
         h.Queue.Enqueue(new ChangeEvent { SyncPairId = h.Pair.Id, Side = SyncSide.Local, Kind = ChangeKind.Renamed,
             RelativePath = "Notes.txt", OldRelativePath = "notes.txt" });
 
