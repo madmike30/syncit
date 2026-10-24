@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-SyncIt is a Windows Google Drive sync application (like OneDrive/Google Drive desktop). It runs as a single-process WinForms app with a system tray icon, background sync engines, and a dashboard UI. Users pick a local root folder (e.g. `C:\Users${1}You${2}My Drive`) and select which Google Drive folders to sync under it — similar to Google Drive Desktop's selective sync.
+SyncIt is a Windows Google Drive sync application (like OneDrive/Google Drive desktop). It runs as a single-process WinForms app with a system tray icon, background sync engines, and a dashboard UI. Users pick a local root folder (e.g. `C:\Users\You\My Drive`) and select which Google Drive folders to sync under it — similar to Google Drive Desktop's selective sync.
 
 ## Tech Stack
 
