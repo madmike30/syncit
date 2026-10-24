@@ -50,7 +50,8 @@ public class SyncPair
     ///   ["Work/Reports", "Finance"]  → sync Work/Reports/ and Finance/ subtrees
     ///
     /// Paths are matched case-insensitively and use forward slashes.
-    /// Files at the root of RemoteFolderId (not inside any subfolder) are always synced.
+    /// When non-empty, files at the root of RemoteFolderId that are not inside
+    /// a selected subfolder are excluded from sync.
     /// </summary>
     public List<string> SelectedSubfolders { get; set; } = new();
 }

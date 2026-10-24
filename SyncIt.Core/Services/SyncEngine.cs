@@ -176,7 +176,7 @@ public sealed class SyncEngine : ISyncEngine
 
         SetState(SyncState.Idle);
 
-        // Step 5: Start the change consumer and poll loop concurrently
+        // Step 6: Start the change consumer and poll loop concurrently
         // Link the external ct with our internal CTS so DisposeAsync can cancel both
         _internalCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var linkedCt = _internalCts.Token;
@@ -660,9 +660,9 @@ public sealed class SyncEngine : ISyncEngine
 
             var absPath = PathHelper.ToAbsolute(pair.LocalPath, rec.RelativePath);
 
-            if (!IOFile.Exists(absPath))
+            if (!IOFile.Exists(absPath) && !Directory.Exists(absPath))
             {
-                // File in baseline but missing locally — was deleted while we were stopped
+                // Item in baseline but missing locally — was deleted while we were stopped
                 _changeQueue.Enqueue(new ChangeEvent
                 {
                     SyncPairId   = pair.Id,
@@ -853,11 +853,28 @@ public sealed class SyncEngine : ISyncEngine
             }
             else if (ev.Kind == ChangeKind.Renamed && ev.OldRelativePath is not null)
             {
-                // Folder rename: create new folder path on Drive, move contents will be handled by individual file events
+                // Folder rename: create new folder path on Drive
                 await _driveService.EnsureFolderPathAsync(pair.RemoteFolderId, ev.RelativePath.Replace('/', Path.DirectorySeparatorChar), ct);
                 await SetOverlayAsync(ev.RelativePath, OverlaySyncState.Synced, ct);
                 LogActivity(ActivityType.Renamed, ev.RelativePath, details: $"Folder renamed from {ev.OldRelativePath}");
                 _logger.LogInformation("Folder renamed: '{Old}' → '{New}'", ev.OldRelativePath, ev.RelativePath);
+
+                // FSW does not fire events for files inside a renamed folder on Windows.
+                // Enqueue each file at the new path as Created so it gets uploaded under
+                // the new Drive folder. Old-path baselines will be detected as missing
+                // locally on the next reconciliation and cleaned up via the deletion pipeline.
+                foreach (var absFile in Directory.EnumerateFiles(absolutePath, "*", SearchOption.AllDirectories))
+                {
+                    var rel = TryMakeRelative(pair.LocalPath, absFile);
+                    if (rel is not null && _globFilter.IsIncluded(rel, pair))
+                        _changeQueue.Enqueue(new ChangeEvent
+                        {
+                            SyncPairId   = pair.Id,
+                            Side         = SyncSide.Local,
+                            Kind         = ChangeKind.Created,
+                            RelativePath = rel,
+                        });
+                }
             }
             return;
         }

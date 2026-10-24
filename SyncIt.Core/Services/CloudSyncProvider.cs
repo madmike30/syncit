@@ -32,6 +32,12 @@ public sealed class CloudSyncProvider : IOverlayStateStore
     // Tracks how many non-synced files exist under each directory.
     private readonly ConcurrentDictionary<string, int> _dirNotSyncedCount = new(StringComparer.OrdinalIgnoreCase);
 
+    // Tracks the last-known synced state per item to prevent PropagateParentState from
+    // being called multiple times for the same file crossing the same boundary.
+    // Without this, Pending → Syncing → Synced increments the parent counter twice
+    // but only decrements it once, leaving it permanently > 0 (folder stays EXCLUDED).
+    private readonly ConcurrentDictionary<string, bool> _itemWasSynced = new(StringComparer.OrdinalIgnoreCase);
+
     public CloudSyncProvider(string syncRootPath, string providerId, ILogger logger, string? displayName = null)
     {
         _syncRootPath = Path.GetFullPath(syncRootPath);
@@ -77,6 +83,7 @@ public sealed class CloudSyncProvider : IOverlayStateStore
                     bool isSynced = isSyncedFilter is null || isSyncedFilter(relativePath);
                     EnsurePlaceholder(dir);
                     SetInSyncState(dir, true, pin: isSynced);
+                    _itemWasSynced[dir] = isSynced;
                     if (isSynced) synced++; else suppressed++;
                 }
                 catch (Exception ex)
@@ -94,6 +101,7 @@ public sealed class CloudSyncProvider : IOverlayStateStore
                     bool isSynced = isSyncedFilter is null || isSyncedFilter(relativePath);
                     EnsurePlaceholder(file);
                     SetInSyncState(file, true, pin: isSynced);
+                    _itemWasSynced[file] = isSynced;
                     if (isSynced) synced++; else suppressed++;
                 }
                 catch (Exception ex)
@@ -119,7 +127,7 @@ public sealed class CloudSyncProvider : IOverlayStateStore
             bool inSync = state == OverlaySyncState.Synced;
             EnsurePlaceholder(absolutePath);
             SetInSyncState(absolutePath, inSync, pin: true);
-            PropagateParentState(absolutePath, inSync);
+            PropagateParentStateIfChanged(absolutePath, inSync);
         }
         catch (Exception ex)
         {
@@ -138,7 +146,7 @@ public sealed class CloudSyncProvider : IOverlayStateStore
                 bool inSync = state == OverlaySyncState.Synced;
                 EnsurePlaceholder(path);
                 SetInSyncState(path, inSync, pin: true);
-                PropagateParentState(path, inSync);
+                PropagateParentStateIfChanged(path, inSync);
             }
             catch (Exception ex)
             {
@@ -146,6 +154,20 @@ public sealed class CloudSyncProvider : IOverlayStateStore
             }
         }
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Only propagates parent state when the item crosses the synced/not-synced boundary.
+    /// Guards against double-counting when the same file transitions Pending → Syncing → Synced:
+    /// without this, the parent counter would be incremented twice and decremented once,
+    /// leaving it permanently > 0 and the folder permanently EXCLUDED (no icon).
+    /// </summary>
+    private void PropagateParentStateIfChanged(string absolutePath, bool inSync)
+    {
+        bool wasSynced = _itemWasSynced.GetOrAdd(absolutePath, true);
+        _itemWasSynced[absolutePath] = inSync;
+        if (wasSynced != inSync)
+            PropagateParentState(absolutePath, inSync);
     }
 
     public Task RemoveAsync(string absolutePath, CancellationToken ct = default)
@@ -362,7 +384,7 @@ public sealed class CloudSyncProvider : IOverlayStateStore
                 IntPtr.Zero);
 
             if (pinHr < 0)
-                _logger.LogDebug("CfSetPinState(UNPINNED) failed: 0x{Hr:X8} for {Path}", pinHr, absolutePath);
+                _logger.LogDebug("CfSetPinState(EXCLUDED) failed: 0x{Hr:X8} for {Path}", pinHr, absolutePath);
         }
     }
 
