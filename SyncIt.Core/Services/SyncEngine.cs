@@ -446,7 +446,7 @@ public sealed class SyncEngine : ISyncEngine
                     continue;
                 }
 
-                var relativePath = await _driveService.GetRelativePathAsync(change.FileId, pair.RemoteFolderId, ct);
+                var relativePath = await _driveService.GetRelativePathAsync(change.FileId!, pair.RemoteFolderId, ct);
                 if (relativePath is null) continue;
                 relativePath = GetRemoteSyncRelativePath(change.File, relativePath);
 
@@ -645,7 +645,7 @@ public sealed class SyncEngine : ISyncEngine
     private async Task ReconcileLocalChangesAsync(SyncPair pair, CancellationToken ct)
     {
         _logger.LogInformation("Reconciling local changes for pair '{Id}'...", pair.Id);
-        int deleted = 0, modified = 0, created = 0;
+        int deleted = 0, modified = 0;
 
         // 1. Check baseline records against actual files — detect deletes and modifications
         var baselinePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

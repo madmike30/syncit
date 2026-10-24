@@ -87,7 +87,7 @@ All data lives under `%APPDATA%\SyncIt\`:
 | `token.bin` | DPAPI-encrypted OAuth2 refresh token |
 | `state.db` | SQLite file baseline state |
 | `delete-journal.db` | Deletion audit log |
-| `logs/` | Rolling logs (30-day retention) |
+| `logs/` | Rolling logs (7-day retention) |
 
 See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full config reference, or [docs/syncit.example.json](docs/syncit.example.json) for an annotated example.
 
@@ -97,6 +97,7 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full config reference
 - [User Guide](docs/USER-GUIDE.md) — quickstart, menu walkthrough, troubleshooting
 - [Configuration](docs/CONFIGURATION.md) — complete settings reference
 - [Test Plan](docs/TEST-PLAN.md) — QA test matrix
+- [Security](SECURITY.md) — credential storage and reporting issues
 
 ## Tech stack
 
