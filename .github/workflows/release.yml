@@ -1,4 +1,4 @@
-﻿name: Release
+name: Release
 on:
   push:
     tags: ['v*']
@@ -18,6 +18,10 @@ jobs:
       - name: Test
         run: dotnet test SyncIt.sln -c Release
       - name: Publish single-file exe
+        env:
+          # Built-in Google sign-in client (optional). Without these secrets the build uses bring-your-own-client mode.
+          SYNCIT_GOOGLE_CLIENT_ID: ${{ secrets.SYNCIT_GOOGLE_CLIENT_ID }}
+          SYNCIT_GOOGLE_CLIENT_SECRET: ${{ secrets.SYNCIT_GOOGLE_CLIENT_SECRET }}
         run: >
           dotnet publish SyncIt.App/SyncIt.App.csproj -c Release -r win-x64 -o publish
           --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true

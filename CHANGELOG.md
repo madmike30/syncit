@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.0 - 2026-10-24
+- **One-click sign-in:** the setup screen now shows only a big **Sign in with Google** button, a plain-language note on what access SyncIt asks for and why, and help for Google's *unverified app* screen. It uses a built-in Desktop client injected at build time from `SYNCIT_GOOGLE_CLIENT_ID` and `SYNCIT_GOOGLE_CLIENT_SECRET` (GitHub secrets or env vars; never committed). Builds without it open the own-client setup.
+- **Optional own-client setup (technical users):** reached from a small Advanced link or a sign-in error. Numbered steps, each with an **Open this page** button that links to the right Google Cloud page; **Import client file** plus drag-and-drop for `client_secret_*.json` (Web and service-account files are rejected); manual paste.
+- Sign-in errors are now in plain language. User-cap, blocked and invalid-client errors offer the own-client option.
+- `scripts/setup-google-client.ps1`: if gcloud is installed, creates the project and enables the Drive API, then opens the remaining pages.
+- Docs: illustrated SETUP-GOOGLE-OAUTH.md, new GOOGLE-CLOUD-SETUP-FOR-MAINTAINER.md, SECURITY note on desktop client secrets.
+- 29 new tests (157 total).
+
 ## 1.0.0 - 2026-10-24
 - MIT license.
 - Versioning from `Directory.Build.props` (1.0.0); version shown in tray **About** and logged at startup.
