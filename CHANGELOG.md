@@ -1,4 +1,8 @@
-# Changelog
+﻿# Changelog
+
+## 1.1.2 - 2026-10-24
+- **Fixed a crash when the sign-in window opened** ("unhandled exception" dialog). The app's UI thread was not STA (async top-level `Main`), so enabling drag-and-drop on the sign-in window threw. `Main` is now `[STAThread]`, drag-and-drop is only enabled on STA threads, and background code always shows windows on the UI thread.
+- Unexpected errors now show a short, friendly message (and write a crash report) instead of the raw WinForms dialog.
 
 ## 1.1.1 - 2026-10-24
 - **Fixed two engines syncing the same folder.** Switching account restarted the sync engines itself while the config-file watcher restarted them a second time, so one folder ended up with two engines (and could get duplicate uploads). Engine start/stop now goes through one lifecycle gate, every start first stops what is running, the watcher is muted during account operations, and duplicate pairs (same ID or same folder) are ignored.

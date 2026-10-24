@@ -110,7 +110,8 @@ public sealed class FirstRunForm : Form
     {
         var page = NewPage();
         page.AutoScroll = true;
-        page.AllowDrop = true;
+        // Drag-and-drop needs an STA thread; without it, importing still works via the button.
+        page.AllowDrop = ApartmentGuard.CanUseOleFeatures();
         page.DragEnter += OnDragEnter;
         page.DragDrop  += OnDragDrop;
 

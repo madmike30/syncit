@@ -54,6 +54,11 @@ public sealed class SyncItApp : ApplicationContext
     // Dashboard (kept alive so it can be shown/hidden)
     private DashboardForm? _dashboard;
 
+    // Created on the UI thread so background work can always marshal UI calls to it.
+    // (The tray menu's handle doesn't exist until it is first opened, so using it for Invoke
+    // ran dialogs on worker threads.)
+    private readonly Control _uiInvoker = new();
+
     // ── Sync engine state (in-process, no IPC) ─────────────────────────────────
     private SyncConfig _config = new();
     private CancellationTokenSource _engineCts = new();
@@ -87,6 +92,7 @@ public sealed class SyncItApp : ApplicationContext
         _logger        = loggerFactory.CreateLogger<SyncItApp>();
         _iconManager   = new IconManager();
         _traySettings  = TraySettings.Load();
+        _ = _uiInvoker.Handle; // force handle creation on the UI thread
         Theme.Initialize(_traySettings.Theme);
 
         InitializeNotifyIcon();
@@ -1123,8 +1129,8 @@ public sealed class SyncItApp : ApplicationContext
 
     private void InvokeUI(Action action)
     {
-        if (_notifyIcon.ContextMenuStrip?.InvokeRequired == true)
-            _notifyIcon.ContextMenuStrip.Invoke(action);
+        if (_uiInvoker.InvokeRequired)
+            _uiInvoker.Invoke(action);
         else
             action();
     }
