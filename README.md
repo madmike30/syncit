@@ -4,18 +4,21 @@ A lightweight, bidirectional Google Drive sync tool for Windows. Keep a local fo
 
 <p align="center"><img src="docs/images/app-icon.png" width="96" alt="SyncIt icon"></p>
 
-| Light | Dark |
+| Dashboard | Tray menu |
 |---|---|
-| ![Dashboard](docs/images/dashboard-light.png) | ![Dashboard dark](docs/images/dashboard-dark.png) |
-| ![Tray menu](docs/images/tray-menu-light.png) | ![Tray menu dark](docs/images/tray-menu-dark.png) |
+| ![Dashboard](docs/images/dashboard-light.png) | ![Tray menu](docs/images/tray-menu-light.png) |
 
-| Settings → Accounts (several accounts at once) | Settings → Folders |
+| Settings → Accounts (several accounts at once) | Settings → Folders (filters, conflict rule, pause) |
 |---|---|
 | ![Settings accounts](docs/images/settings-accounts-light.png) | ![Settings folders](docs/images/settings-folders-light.png) |
+| **Settings → Appearance** | **Settings → Updates** |
+| ![Settings appearance](docs/images/settings-appearance-light.png) | ![Settings updates](docs/images/settings-updates-light.png) |
+| **Settings → General (startup, bandwidth)** | **Add folder → account and drive** |
+| ![Settings general](docs/images/settings-general-light.png) | ![Add folder location](docs/images/add-folder-location-light.png) |
 
-Add folder → pick the account and My Drive or a shared drive:
-
-![Add folder location](docs/images/add-folder-location-light.png)
+| Sign-in |
+|---|
+| ![Sign in](docs/images/sign-in-light.png) |
 
 ## Features
 
