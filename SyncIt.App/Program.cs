@@ -62,6 +62,7 @@ internal static class Program
             }
             catch { /* never throw from the crash handler */ }
         }
+        UiGuard.Reporter = (ex, source) => ReportCrash(ex, source);
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         Application.ThreadException += (_, e) => ReportCrash(e.Exception, "UI thread");
         AppDomain.CurrentDomain.UnhandledException += (_, e) => { if (e.ExceptionObject is Exception ex) ReportCrash(ex, "AppDomain"); };

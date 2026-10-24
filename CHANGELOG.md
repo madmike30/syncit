@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.3.2 - 2026-10-24
+- **Errors from tray menu, dashboard links and Settings are always logged.** Actions started outside the normal window message loop (for example through Windows accessibility / UI Automation) could fail silently; they now go through the crash reporter (log + crash report + friendly message).
+
 ## 1.3.1 - 2026-10-24
 - **Fixed the new Settings window not opening.** Applying the theme re-raised the page-selection event while a page was being built, which crashed the window. Pages are now built once, with proper margins and a wider window.
 - README: screenshots of Settings and the add-folder account/drive picker.

@@ -717,7 +717,7 @@ public sealed class DashboardForm : Form
             Margin    = new Padding(0, 0, 16, 0),
             Padding   = new Padding(0, 2, 0, 0),
         };
-        link.Click += (_, _) => onClick();
+        link.Click += (_, _) => SyncIt.Core.Helpers.UiGuard.Run(onClick, "Dashboard: " + text);
         return link;
     }
 

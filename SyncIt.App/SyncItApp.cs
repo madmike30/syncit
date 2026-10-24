@@ -472,7 +472,9 @@ public sealed class SyncItApp : ApplicationContext
 
     private SettingsForm? _settings;
 
-    private void ShowSettings(string page = "Accounts")
+    private void ShowSettings(string page = "Accounts") => UiGuard.Run(() => ShowSettingsCore(page), "ShowSettings");
+
+    private void ShowSettingsCore(string page)
     {
         if (_settings is not null && !_settings.IsDisposed) { _settings.Activate(); return; }
         _settings = new SettingsForm(new SettingsHost
@@ -786,7 +788,7 @@ public sealed class SyncItApp : ApplicationContext
         _menu.Items.Add(_pauseItem);
         _menu.Items.Add("Account...",         null, OnSwitchAccount);
         _menu.Items.Add("Settings...",        null, (_, _) => ShowSettings());
-        _updateItem = new ToolStripMenuItem("Install update...", null, async (_, _) => await InstallUpdateAsync()) { Visible = false };
+        _updateItem = new ToolStripMenuItem("Install update...", null, async (_, _) => await UiGuard.RunAsync(InstallUpdateAsync, "InstallUpdate")) { Visible = false };
         _menu.Items.Add(_updateItem);
         _menu.Items.Add(new ToolStripSeparator());
 
@@ -851,7 +853,9 @@ public sealed class SyncItApp : ApplicationContext
     // Dashboard
     // =========================================================================
 
-    private void ShowDashboard()
+    private void ShowDashboard() => UiGuard.Run(() => ShowDashboardCore(), "ShowDashboard");
+
+    private void ShowDashboardCore()
     {
         if (_dashboard is not null && !_dashboard.IsDisposed)
         {
@@ -1033,7 +1037,9 @@ public sealed class SyncItApp : ApplicationContext
         MessageBox.Show($"SyncIt {AppInfo.Version}\nBidirectional Google Drive sync for Windows.\n\nMIT License - Copyright (c) 2026 SyncIt contributors\nhttps://github.com/madmike30/syncit",
             "About SyncIt", MessageBoxButtons.OK, MessageBoxIcon.Information);
 
-    private void ShowAccountForm()
+    private void ShowAccountForm() => UiGuard.Run(() => ShowAccountFormCore(), "ShowAccountForm");
+
+    private void ShowAccountFormCore()
     {
         using var form = new AccountForm(
             _accountInfo?.Email,
@@ -1115,7 +1121,9 @@ public sealed class SyncItApp : ApplicationContext
     /// Adds a sync pair chosen by the user. The pair stays off until the user has picked
     /// folders and confirmed, so nothing starts syncing by surprise.
     /// </summary>
-    private void AddSyncFolder()
+    private void AddSyncFolder() => UiGuard.Run(() => AddSyncFolderCore(), "AddSyncFolder");
+
+    private void AddSyncFolderCore()
     {
         if (_driveService is null)
         {
