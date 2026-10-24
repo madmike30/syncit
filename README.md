@@ -9,6 +9,14 @@ A lightweight, bidirectional Google Drive sync tool for Windows. Keep a local fo
 | ![Dashboard](docs/images/dashboard-light.png) | ![Dashboard dark](docs/images/dashboard-dark.png) |
 | ![Tray menu](docs/images/tray-menu-light.png) | ![Tray menu dark](docs/images/tray-menu-dark.png) |
 
+| Settings → Accounts (several accounts at once) | Settings → Folders |
+|---|---|
+| ![Settings accounts](docs/images/settings-accounts-light.png) | ![Settings folders](docs/images/settings-folders-light.png) |
+
+Add folder → pick the account and My Drive or a shared drive:
+
+![Add folder location](docs/images/add-folder-location-light.png)
+
 ## Features
 
 - **Multiple Google accounts at once** — add several accounts (Settings → Accounts); every sync folder belongs to one account, each account has its own DPAPI-encrypted sign-in and its own Disconnect

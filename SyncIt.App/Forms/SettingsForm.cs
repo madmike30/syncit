@@ -24,22 +24,28 @@ internal sealed class SettingsForm : Form
     private readonly SettingsHost _host;
     private SyncConfig _config;
     private readonly ListBox _nav = new() { Dock = DockStyle.Left, Width = 170, BorderStyle = BorderStyle.None, IntegralHeight = false, DrawMode = DrawMode.OwnerDrawFixed, ItemHeight = 40 };
-    private readonly Panel _page = new() { Dock = DockStyle.Fill, Padding = new Padding(28, 20, 28, 20), AutoScroll = true };
+    private readonly Panel _page = new() { Dock = DockStyle.Fill, AutoScroll = true };
 
     public SettingsForm(SettingsHost host, string startPage = "Accounts")
     {
         _host = host;
         _config = host.LoadConfig();
         Text = "SyncIt Settings";
-        ClientSize = new Size(760, 540);
-        MinimumSize = new Size(700, 480);
+        ClientSize = new Size(900, 600);
+        MinimumSize = new Size(880, 560);
         StartPosition = FormStartPosition.CenterScreen;
         Font = Theme.Body(10f);
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
         _nav.Items.AddRange(Pages);
         _nav.DrawItem += DrawNavItem;
-        _nav.SelectedIndexChanged += (_, _) => ShowPage(_nav.SelectedItem as string ?? Pages[0]);
+        _nav.SelectedIndexChanged += (_, _) =>
+        {
+            // Theme.Apply can recreate the list's handle and re-raise this event; never rebuild re-entrantly.
+            var name = _nav.SelectedItem as string ?? Pages[0];
+            if (_building || name == _currentPage) return;
+            ShowPage(name);
+        };
         Controls.Add(_page);
         Controls.Add(_nav);
         Theme.Apply(this);
@@ -64,7 +70,19 @@ internal sealed class SettingsForm : Form
             TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
     }
 
+    private bool _building;
+    private string? _currentPage;
+
     private void ShowPage(string name)
+    {
+        if (_building) return;
+        _building = true;
+        _currentPage = name;
+        try { BuildPage(name); }
+        finally { _building = false; }
+    }
+
+    private void BuildPage(string name)
     {
         _page.SuspendLayout();
         _page.Controls.Clear();
@@ -78,9 +96,16 @@ internal sealed class SettingsForm : Form
             case "Updates": BuildUpdates(ref y); break;
             default: BuildGeneral(ref y); break;
         }
+        foreach (Control c in _page.Controls) c.Location = new Point(c.Left + 32, c.Top + 20); // page margins
         Theme.Apply(this);
         _nav.BackColor = Theme.SurfaceAlt;
         _page.ResumeLayout();
+    }
+
+    private void RefreshPage(string name)
+    {
+        _currentPage = null;
+        ShowPage(name);
     }
 
     private void Add(Control c, ref int y, int advance)
@@ -123,7 +148,7 @@ internal sealed class SettingsForm : Form
         {
             add.Enabled = false;
             try { await _host.AddAccount(); }
-            finally { _config = _host.LoadConfig(); ShowPage("Accounts"); }
+            finally { _config = _host.LoadConfig(); RefreshPage("Accounts"); }
         };
         var disconnect = Btn("Disconnect…");
         disconnect.Click += async (_, _) =>
@@ -135,7 +160,7 @@ internal sealed class SettingsForm : Form
                     "Disconnect account", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK) return;
             disconnect.Enabled = false;
             try { await _host.DisconnectAccount(id); }
-            finally { _config = _host.LoadConfig(); if (!IsDisposed) ShowPage("Accounts"); }
+            finally { _config = _host.LoadConfig(); if (!IsDisposed) RefreshPage("Accounts"); }
         };
         add.Location = new Point(0, y);
         disconnect.Location = new Point(140, y);
@@ -197,7 +222,7 @@ internal sealed class SettingsForm : Form
             var index = pairs.SelectedIndex;
             pairs.Items[index] = PairSettingsEditor.DescribePair(p, _config);
         };
-        addFolder.Click += (_, _) => { _host.AddFolder(); _config = _host.LoadConfig(); ShowPage("Folders"); };
+        addFolder.Click += (_, _) => { _host.AddFolder(); _config = _host.LoadConfig(); RefreshPage("Folders"); };
     }
 
     // ── Appearance ──────────────────────────────────────────────────────────
@@ -221,7 +246,7 @@ internal sealed class SettingsForm : Form
             s.NotificationsEnabled = notifications.Checked;
             s.Save();
             Theme.Initialize(s.Theme);
-            ShowPage("Appearance");
+            RefreshPage("Appearance");
         };
         Add(apply, ref y, 50);
     }

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.1 - 2026-10-24
+- **Fixed the new Settings window not opening.** Applying the theme re-raised the page-selection event while a page was being built, which crashed the window. Pages are now built once, with proper margins and a wider window.
+- README: screenshots of Settings and the add-folder account/drive picker.
+
 ## 1.3.0 - 2026-10-24
 - **Multiple Google accounts at the same time.** Add accounts in Settings → Accounts; each sync folder belongs to one account and each account has its own DPAPI-encrypted sign-in and its own Disconnect (files on the PC and in Drive are never deleted). Your existing sign-in and folder are migrated automatically - no new sign-in, no re-sync.
 - **Shared drives.** When you add a folder you choose the account and either My Drive or one of its shared drives.
