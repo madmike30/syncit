@@ -109,6 +109,7 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full config reference
 - [Google OAuth setup](docs/SETUP-GOOGLE-OAUTH.md) — sign-in, plus optional own-client setup
 - [Maintainer: Google Cloud setup](docs/GOOGLE-CLOUD-SETUP-FOR-MAINTAINER.md) — built-in client, limits, verification
 - [Releasing](docs/RELEASING.md) — tags, draft releases, signing options
+- [Privacy Policy](docs/PRIVACY.md) · [Terms of Use](docs/TERMS.md)
 - [Security](SECURITY.md) — credential storage and reporting issues
 
 ## Tech stack
