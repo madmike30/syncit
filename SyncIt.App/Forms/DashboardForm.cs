@@ -38,6 +38,12 @@ public sealed class DashboardForm : Form
     private readonly Action<string> _selectSubfolders;      // pairId
     private readonly Action _openSyncFolder;
     private readonly Action? _showAccountForm;
+    private readonly Action? _addSyncFolder;
+
+    // Last rendered data. The 3-second refresh only touches controls when something changed;
+    // rebuilding everything every tick is what made the window flicker.
+    private string? _pairsSignature;
+    private string? _activitySignature;
 
     // ── Dynamic controls ────────────────────────────────────────────────
     private Label _accountLabel = null!;
@@ -63,8 +69,10 @@ public sealed class DashboardForm : Form
         Action openSyncFolder,
         Action? showAccountForm = null,
         Action<string>? selectSubfolders = null,
-        Func<Task<List<ActivityRecord>?>>? fetchAllActivity = null)
+        Func<Task<List<ActivityRecord>?>>? fetchAllActivity = null,
+        Action? addSyncFolder = null)
     {
+        _addSyncFolder    = addSyncFolder;
         _getStatus        = getStatus;
         _getTransfers     = getTransfers;
         _syncNow          = syncNow;
@@ -78,6 +86,7 @@ public sealed class DashboardForm : Form
         _showAccountForm  = showAccountForm;
 
         SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+        DoubleBuffered = true;
         BuildUI();
     }
 
@@ -348,7 +357,7 @@ public sealed class DashboardForm : Form
         if (status is null) return;
 
         // Account
-        _accountLabel.Text = status.AccountEmail ?? "Not signed in";
+        SetIfChanged(_accountLabel, status.AccountEmail ?? "Not signed in");
 
         // State
         var (dot, color, text) = status.State switch
@@ -361,29 +370,31 @@ public sealed class DashboardForm : Form
             SyncState.DeletionFrozen => ("\u25CF", AccentOrange, "Deletions Frozen"),
             _                        => ("\u25CF", SubtleText,   status.State.ToString()),
         };
-        _statusDot.Text      = dot;
-        _statusDot.ForeColor = color;
-        _statusText.Text     = text;
+        SetIfChanged(_statusDot, dot);
+        if (_statusDot.ForeColor != color) _statusDot.ForeColor = color;
+        SetIfChanged(_statusText, text);
 
         // Storage
         if (status.StorageTotalBytes > 0)
         {
             var pct = (double)status.StorageUsedBytes / status.StorageTotalBytes;
-            _storageLabel.Text = $"{FormatBytes(status.StorageUsedBytes)} of {FormatBytes(status.StorageTotalBytes)} used ({pct:P0})";
-            var fillWidth = (int)(pct * _storageBar.Width);
-            _storageBarFill.Size = new Size(Math.Max(1, fillWidth), _storageBar.Height);
-            _storageBarFill.BackColor = pct > 0.9 ? AccentRed : pct > 0.75 ? AccentOrange : AccentBlue;
-            _storageBar.Visible  = true;
-            _storageLabel.Visible = true;
+            SetIfChanged(_storageLabel, $"{FormatBytes(status.StorageUsedBytes)} of {FormatBytes(status.StorageTotalBytes)} used ({pct:P0})");
+            var fillSize = new Size(Math.Max(1, (int)(pct * _storageBar.Width)), _storageBar.Height);
+            if (_storageBarFill.Size != fillSize) _storageBarFill.Size = fillSize;
+            var fillColor = pct > 0.9 ? AccentRed : pct > 0.75 ? AccentOrange : AccentBlue;
+            if (_storageBarFill.BackColor != fillColor) _storageBarFill.BackColor = fillColor;
+            if (!_storageBar.Visible)  _storageBar.Visible  = true;
+            if (!_storageLabel.Visible) _storageLabel.Visible = true;
         }
         else
         {
-            _storageBar.Visible  = false;
-            _storageLabel.Visible = false;
+            if (_storageBar.Visible)  _storageBar.Visible  = false;
+            if (_storageLabel.Visible) _storageLabel.Visible = false;
         }
 
         // Pause button
-        _pauseBtn.Text = _isPaused() ? "\u25B6  Resume" : "\u23F8  Pause";
+        var pauseText = _isPaused() ? "\u25B6  Resume" : "\u23F8  Pause";
+        if (_pauseBtn.Text != pauseText) _pauseBtn.Text = pauseText;
 
         // Sync pairs
         RebuildPairCards(status);
@@ -391,8 +402,16 @@ public sealed class DashboardForm : Form
 
     private void RebuildPairCards(SyncStatus status)
     {
+        var signature = string.Join("\n", status.PairStatuses.Select(p =>
+            $"{p.SyncPairId}|{p.State}|{p.LocalPath}|{p.PendingChanges}|{p.PendingDeletions}|{p.LastError}|{string.Join(",", p.SelectedSubfolders)}"))
+            + $"#{_pairsContainer.Width}";
+        if (signature == _pairsSignature) return;
+        _pairsSignature = signature;
+
         _pairsContainer.SuspendLayout();
+        var old = _pairsContainer.Controls.Cast<Control>().ToList();
         _pairsContainer.Controls.Clear();
+        foreach (var c in old) c.Dispose();
 
         int y = 0;
         foreach (var pair in status.PairStatuses)
@@ -550,13 +569,33 @@ public sealed class DashboardForm : Form
         {
             var emptyLabel = new Label
             {
-                Text      = "No sync pairs configured. Edit Preferences to add one.",
+                Text      = "No folders are syncing yet. Add a folder on this PC to keep in sync with Google Drive.",
                 ForeColor = SubtleText,
                 AutoSize  = true,
+                MaximumSize = new Size(Math.Max(200, _pairsContainer.Width - 40), 0),
                 Location  = new Point(0, 4),
             };
             _pairsContainer.Controls.Add(emptyLabel);
-            y = 28;
+            var addBtn = new Button
+            {
+                Text      = "Add a folder to sync",
+                Size      = new Size(170, 32),
+                Location  = new Point(0, 34),
+                BackColor = AccentBlue,
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Cursor    = Cursors.Hand,
+                Enabled   = _addSyncFolder is not null,
+            };
+            addBtn.FlatAppearance.BorderSize = 0;
+            addBtn.Click += (_, _) =>
+            {
+                _refreshTimer?.Stop();
+                try { _addSyncFolder?.Invoke(); _pairsSignature = null; }
+                finally { _refreshTimer?.Start(); }
+            };
+            _pairsContainer.Controls.Add(addBtn);
+            y = 74;
         }
 
         _pairsContainer.Height = y + 8;
@@ -570,10 +609,15 @@ public sealed class DashboardForm : Form
             var records = await _fetchActivity();
             if (records is null || records.Count == 0) return;
 
+            var top = records.Take(20).ToList();
+            var signature = string.Join("\n", top.Select(r => $"{r.TimestampUtc.Ticks}|{r.Type}|{r.RelativePath}|{r.SizeBytes}"));
+            if (signature == _activitySignature) return;
+            _activitySignature = signature;
+
             _activityList.BeginUpdate();
             _activityList.Items.Clear();
 
-            foreach (var r in records.Take(20))
+            foreach (var r in top)
             {
                 var item = new ListViewItem(r.TimestampUtc.ToLocalTime().ToString("MM/dd HH:mm"));
                 item.SubItems.Add(r.Type.ToString());
@@ -691,6 +735,22 @@ public sealed class DashboardForm : Form
         if (bytes >= 1024) return $"{bytes / 1024.0:F1} KB";
         return $"{bytes} B";
     }
+    // Paint the whole window (including child controls) off-screen in one pass: no flicker on updates.
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var cp = base.CreateParams;
+            cp.ExStyle |= 0x02000000; // WS_EX_COMPOSITED
+            return cp;
+        }
+    }
+
+    private static void SetIfChanged(Label label, string text)
+    {
+        if (label.Text != text) label.Text = text;
+    }
+
     // Fluent theme (see Theme.cs): remaps colors/fonts by role, dark mode, rounded window corners.
     protected override void OnHandleCreated(EventArgs e)
     {

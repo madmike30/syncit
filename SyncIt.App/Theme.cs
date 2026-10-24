@@ -6,12 +6,18 @@ namespace SyncIt.App;
 
 /// <summary>
 /// SyncIt design system: Windows 11 (Fluent) look for WinForms.
-/// Light/dark follows the Windows app theme; accent follows the Windows accent color.
+/// Light by default; Preferences can switch to Dark or follow Windows. Accent follows the Windows accent color.
 /// Forms call <see cref="Apply(Form)"/> once their controls exist; existing colors are remapped by role.
 /// </summary>
 internal static class Theme
 {
-    public static bool IsDark { get; } = ReadIsDark();
+    /// <summary>Light by default. Set from Preferences (Light / Dark / System).</summary>
+    public static bool IsDark { get; private set; } = ReadIsDark("Light");
+
+    public static readonly string[] Modes = { "Light", "Dark", "System" };
+
+    /// <summary>Applies the saved appearance; affects windows opened afterwards.</summary>
+    public static void Initialize(string? mode) => IsDark = ReadIsDark(mode);
     public static Color Accent { get; } = ReadAccent();
 
     public static Color Background => IsDark ? Color.FromArgb(32, 32, 32) : Color.FromArgb(243, 243, 243);
@@ -248,9 +254,11 @@ internal static class Theme
 
     // ── Windows integration ────────────────────────────────────────────────────
 
-    private static bool ReadIsDark()
+    internal static bool ReadIsDark(string? mode)
     {
         if (Environment.GetEnvironmentVariable("SYNCIT_THEME") is { } forced) return forced.Equals("dark", StringComparison.OrdinalIgnoreCase);
+        if (string.Equals(mode, "Dark", StringComparison.OrdinalIgnoreCase)) return true;
+        if (!string.Equals(mode, "System", StringComparison.OrdinalIgnoreCase)) return false;
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");

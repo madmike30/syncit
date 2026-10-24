@@ -23,6 +23,13 @@ public sealed class SyncItApp : ApplicationContext
     internal static readonly string ConfigPath =
         PathHelper.Expand(@"%APPDATA%\SyncIt\syncit.json");
 
+    private static readonly JsonSerializerOptions WriteOpts = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        WriteIndented               = true,
+        Converters                  = { new JsonStringEnumConverter() },
+    };
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -58,6 +65,9 @@ public sealed class SyncItApp : ApplicationContext
     private IActivityLog? _activityLog;
 
     private readonly object _enginesLock = new();
+    private readonly EngineLifecycleGate _lifecycle = new();
+    private volatile bool _suppressConfigReload;
+    private OAuthService? _oauthService;
     private bool _globalPaused;
     private SyncStatus? _lastStatus;
     private List<FileTransferProgress>? _activeTransfers;
@@ -77,6 +87,7 @@ public sealed class SyncItApp : ApplicationContext
         _logger        = loggerFactory.CreateLogger<SyncItApp>();
         _iconManager   = new IconManager();
         _traySettings  = TraySettings.Load();
+        Theme.Initialize(_traySettings.Theme);
 
         InitializeNotifyIcon();
 
@@ -98,9 +109,9 @@ public sealed class SyncItApp : ApplicationContext
             // Load config
             if (!File.Exists(ConfigPath))
             {
-                _logger.LogWarning("No config file found at {Path}. Run first-run setup.", ConfigPath);
-                InvokeUI(() => SetTooltip("SyncIt — No config. Right-click for setup."));
-                return;
+                _logger.LogInformation("No config file found at {Path}. Creating a default one.", ConfigPath);
+                Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath)!);
+                await File.WriteAllTextAsync(ConfigPath, JsonSerializer.Serialize(new SyncConfig(), WriteOpts), ct);
             }
 
             _config = JsonSerializer.Deserialize<SyncConfig>(
@@ -148,8 +159,22 @@ public sealed class SyncItApp : ApplicationContext
                 }
             }
 
+            // Not signed in yet: show the friendly sign-in window instead of silently opening a browser.
+            if (!CredentialHelper.TokenExists(PathHelper.Expand(_config.TokenStorePath)))
+            {
+                var signedIn = false;
+                InvokeUI(() => signedIn = ShowSignIn());
+                if (!signedIn)
+                {
+                    _logger.LogInformation("Not signed in. Waiting for the user to sign in from the tray menu.");
+                    InvokeUI(() => SetTooltip("SyncIt — Not signed in"));
+                    return;
+                }
+            }
+
             // OAuth
             var oauthService = new OAuthService(_config, CreateLogger<OAuthService>());
+            _oauthService = oauthService;
             var credential   = await oauthService.InitializeAsync(ct);
 
             // Shared services
@@ -194,6 +219,9 @@ public sealed class SyncItApp : ApplicationContext
             _configWatcher = new ConfigWatcher(ConfigPath, _config, CreateLogger<ConfigWatcher>());
             _configWatcher.ConfigReloaded += newConfig =>
             {
+                // Account switch / disconnect restart engines themselves; a second restart from the
+                // file watcher is what created two engines for one folder in 1.1.0.
+                if (_suppressConfigReload) return;
                 _ = Task.Run(async () =>
                 {
                     try
@@ -267,13 +295,25 @@ public sealed class SyncItApp : ApplicationContext
         }
     }
 
-    private async Task StartEnginesAsync(
+    private Task StartEnginesAsync(
+        GoogleDriveService driveService,
+        GlobFilter globFilter,
+        AtomicFileWriter atomicWriter,
+        CancellationToken ct) =>
+        _lifecycle.RunAsync(async () =>
+        {
+            // Always start from a clean slate so engines can never pile up.
+            await StopEnginesCoreAsync();
+            await StartEnginesCoreAsync(driveService, globFilter, atomicWriter, ct);
+        });
+
+    private async Task StartEnginesCoreAsync(
         GoogleDriveService driveService,
         GlobFilter globFilter,
         AtomicFileWriter atomicWriter,
         CancellationToken ct)
     {
-        foreach (var pair in _config.SyncPairs.Where(p => p.Enabled))
+        foreach (var pair in SyncPairPlanner.EnabledUnique(_config.SyncPairs))
         {
             var stateStore = CreateStateStore();
             await stateStore.InitializeAsync(ct);
@@ -310,7 +350,9 @@ public sealed class SyncItApp : ApplicationContext
         _logger.LogInformation("Started {Count} sync engine(s).", _engines.Count);
     }
 
-    private async Task StopEnginesAsync()
+    private Task StopEnginesAsync() => _lifecycle.RunAsync(StopEnginesCoreAsync);
+
+    private async Task StopEnginesCoreAsync()
     {
         // Snapshot under lock to avoid races with concurrent Add/reads
         SyncEngine[] engines;
@@ -463,7 +505,7 @@ public sealed class SyncItApp : ApplicationContext
         _menu.Items.Add("Sync Now",            null, OnSyncNow);
         _pauseItem = new ToolStripMenuItem("Pause Syncing", null, OnPauseResume);
         _menu.Items.Add(_pauseItem);
-        _menu.Items.Add("Switch Account",     null, OnSwitchAccount);
+        _menu.Items.Add("Account...",         null, OnSwitchAccount);
         _menu.Items.Add(new ToolStripSeparator());
 
         _autoStartItem = new ToolStripMenuItem("Start with Windows", null, OnToggleAutoStart)
@@ -551,6 +593,7 @@ public sealed class SyncItApp : ApplicationContext
             changeSyncFolder: pairId => ChangeSyncFolder(pairId),
             openSyncFolder:   () => OpenSyncFolder(),
             showAccountForm:  () => ShowAccountForm(),
+            addSyncFolder:    () => AddSyncFolder(),
             selectSubfolders:  pairId => SelectSubfolders(pairId),
             fetchAllActivity: async () => _activityLog is null ? null : await _activityLog.GetRecentAsync(500)
         );
@@ -712,11 +755,180 @@ public sealed class SyncItApp : ApplicationContext
             _accountInfo?.Email,
             _accountInfo?.StorageUsedBytes ?? 0,
             _accountInfo?.StorageTotalBytes ?? 0,
-            SwitchAccountAsync);
+            SwitchAccountAsync,
+            DisconnectAccountAsync);
         form.ShowDialog();
     }
 
+    /// <summary>Shows the sign-in window. Returns true when the user signed in.</summary>
+    private bool ShowSignIn()
+    {
+        using var form = new FirstRunForm();
+        return form.ShowDialog() == DialogResult.OK;
+    }
+
+    /// <summary>
+    /// Disconnect &amp; remove account: stops syncing, revokes Google access, deletes the saved
+    /// sign-in, the custom client (if any), the sync state and the sync pairs.
+    /// Files in the synced folders and on Google Drive are not touched.
+    /// </summary>
+    private async Task DisconnectAccountAsync()
+    {
+        _suppressConfigReload = true;
+        try
+        {
+            _engineCts.Cancel();
+            await Task.Run(StopEnginesAsync);
+            _configWatcher?.Dispose();
+            _configWatcher = null;
+
+            // Revoke at Google so the app no longer has access (best effort; offline is fine).
+            if (_oauthService?.Credential is { } credential)
+            {
+                try
+                {
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                    await credential.RevokeTokenAsync(cts.Token);
+                    _logger.LogInformation("Google access revoked.");
+                }
+                catch (Exception ex) { _logger.LogWarning(ex, "Could not revoke Google access (continuing)."); }
+            }
+            _oauthService = null;
+
+            (_driveService as IDisposable)?.Dispose();
+            _driveService = null;
+            _overlayStore?.Dispose();
+            _overlayStore = null;
+            (_activityLog as IDisposable)?.Dispose();
+            _activityLog = null;
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+
+            await Task.Run(() =>
+            {
+                var removed = AccountReset.RemoveLocalAccount(ConfigPath, _config);
+                if (CredentialHelper.CredentialsExist()) CredentialHelper.DeleteClientCredentials();
+                CloudSyncProvider.UnregisterAll("SyncIt", _logger);
+                _logger.LogInformation("Account disconnected. Removed {Count} local file(s); sync pairs cleared.", removed.Count);
+            });
+
+            _accountInfo = null;
+            _lastStatus = null;
+            InvokeUI(() =>
+            {
+                _dashboard?.Close();
+                _statusItem.Text = "SyncIt — Not signed in";
+                SetTooltip("SyncIt — Not signed in");
+            });
+        }
+        finally { _suppressConfigReload = false; }
+
+        // Start over: shows the sign-in window again.
+        _engineCts = new CancellationTokenSource();
+        _ = Task.Run(StartSyncEngineAsync);
+    }
+
+    /// <summary>
+    /// Adds a sync pair chosen by the user. The pair stays off until the user has picked
+    /// folders and confirmed, so nothing starts syncing by surprise.
+    /// </summary>
+    private void AddSyncFolder()
+    {
+        if (_driveService is null)
+        {
+            MessageBox.Show("Sign in to Google first.", "SyncIt", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        string? selectedPath = null;
+        var thread = new Thread(() =>
+        {
+            using var dialog = new FolderBrowserDialog
+            {
+                Description            = "Choose the folder on this PC to keep in sync with Google Drive",
+                UseDescriptionForTitle = true,
+                ShowNewFolderButton    = true,
+            };
+            if (dialog.ShowDialog() == DialogResult.OK) selectedPath = dialog.SelectedPath;
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+        if (selectedPath is null) return;
+
+        try
+        {
+            var config = JsonSerializer.Deserialize<SyncConfig>(File.ReadAllText(ConfigPath), JsonOpts) ?? new SyncConfig();
+            var normalized = SyncPairPlanner.NormalizeFolder(selectedPath);
+            if (config.SyncPairs.Any(p => SyncPairPlanner.NormalizeFolder(p.LocalPath).Equals(normalized, StringComparison.OrdinalIgnoreCase)))
+            {
+                MessageBox.Show("That folder is already being synced.", "SyncIt", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var pair = new SyncPair
+            {
+                Id               = SyncPairPlanner.NextPairId(config.SyncPairs),
+                LocalPath        = selectedPath,
+                RemoteFolderId   = "root",
+                RemoteFolderName = "My Drive",
+                Enabled          = false,
+            };
+            _suppressConfigReload = true;
+            try
+            {
+                config.SyncPairs.Add(pair);
+                File.WriteAllText(ConfigPath, JsonSerializer.Serialize(config, WriteOpts));
+
+                using (var form = new SelectFoldersForm(pair, ConfigPath, _driveService))
+                    form.ShowDialog();
+
+                var start = MessageBox.Show(
+                    $"Start syncing now?\n\n{selectedPath}  <->  Google Drive\n\n" +
+                    "Files that already exist on both sides are matched by name and content; they are not copied again.",
+                    "SyncIt", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+
+                config = JsonSerializer.Deserialize<SyncConfig>(File.ReadAllText(ConfigPath), JsonOpts) ?? config;
+                var saved = config.SyncPairs.FirstOrDefault(p => p.Id == pair.Id);
+                if (saved is not null) saved.Enabled = start == DialogResult.Yes;
+                File.WriteAllText(ConfigPath, JsonSerializer.Serialize(config, WriteOpts));
+            }
+            finally { _suppressConfigReload = false; }
+
+            // One explicit restart (the watcher was muted while we edited the file).
+            var newConfig = JsonSerializer.Deserialize<SyncConfig>(File.ReadAllText(ConfigPath), JsonOpts);
+            if (newConfig is not null && _driveService is GoogleDriveService drive)
+            {
+                _config = newConfig;
+                _ = Task.Run(async () =>
+                {
+                    var globFilter = new GlobFilter();
+                    var first = SyncPairPlanner.EnabledUnique(_config.SyncPairs).FirstOrDefault();
+                    if (first is not null && _overlayStore is null)
+                    {
+                        _overlayStore = new CloudSyncProvider(PathHelper.Expand(first.LocalPath), "SyncIt", CreateLogger<CloudSyncProvider>());
+                        try { await _overlayStore.InitializeAsync(path => globFilter.IsIncluded(path, first), _engineCts.Token); }
+                        catch (Exception ex) { _logger.LogWarning(ex, "Explorer overlay unavailable."); }
+                    }
+                    await StartEnginesAsync(drive, globFilter, new AtomicFileWriter(CreateLogger<AtomicFileWriter>()), _engineCts.Token);
+                    PushStatus();
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            _suppressConfigReload = false;
+            MessageBox.Show($"Could not add the folder:\n{ex.Message}", "SyncIt", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
     private async Task SwitchAccountAsync()
+    {
+        _suppressConfigReload = true;
+        try { await SwitchAccountCoreAsync(); }
+        finally { _suppressConfigReload = false; }
+    }
+
+    private async Task SwitchAccountCoreAsync()
     {
         // 1. Stop all sync engines (on background thread to avoid UI deadlock)
         _engineCts.Cancel();
@@ -729,6 +941,7 @@ public sealed class SyncItApp : ApplicationContext
 
         // 3. Re-authorize with account picker (forces Google account selection prompt)
         var oauthService = new OAuthService(_config, CreateLogger<OAuthService>());
+        _oauthService = oauthService;
         var credential = await Task.Run(() => oauthService.ReauthorizeAsync());
 
         // 4. Recreate Drive service with new credential

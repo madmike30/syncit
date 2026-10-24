@@ -10,6 +10,9 @@ internal sealed class TraySettings
 
     public bool NotificationsEnabled { get; set; } = true;
 
+    /// <summary>"Light" (default), "Dark" or "System".</summary>
+    public string Theme { get; set; } = "Light";
+
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
     public static TraySettings Load()

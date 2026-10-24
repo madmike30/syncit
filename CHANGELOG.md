@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.1 - 2026-10-24
+- **Fixed two engines syncing the same folder.** Switching account restarted the sync engines itself while the config-file watcher restarted them a second time, so one folder ended up with two engines (and could get duplicate uploads). Engine start/stop now goes through one lifecycle gate, every start first stops what is running, the watcher is muted during account operations, and duplicate pairs (same ID or same folder) are ignored.
+- **Fixed duplicate files on Drive after a first-sync conflict.** When a file existed on both sides with different content and the local copy won, SyncIt created a second file with the same name on Drive. It now updates the existing Drive file in place.
+- **New: Disconnect & remove account** (Account window). After a confirmation it stops syncing, revokes SyncIt's Google access, and removes the saved sign-in, the custom client (if any), sync state, Explorer status registration and folder pairs. Your files on the PC and in Google Drive are not touched. SyncIt then shows the sign-in screen again.
+- **New: Add a folder to sync** from the dashboard. The new pair stays off until you have chosen folders and confirmed, and files already on both sides are matched instead of copied again.
+- When not signed in, SyncIt shows the sign-in window instead of opening the browser by itself. A missing `syncit.json` is created with defaults.
+- **No more dashboard flicker:** the 3-second refresh only updates what changed, old cards are disposed, and the window paints off-screen.
+- **Light theme by default.** Preferences > Appearance: Light, Dark or System (saved in `tray-settings.json`).
+- Tests for the duplicate-engine fix, disconnect, and first-sync adoption (identical trees, same content, conflicts).
+
 ## 1.1.0 - 2026-10-24
 - Added `docs/PRIVACY.md` and `docs/TERMS.md` (also used on Google's OAuth Branding page).
 - **Windows 11 (Fluent) design:** new design system (`Theme.cs`). Segoe UI Variable, a role-based color palette, light/dark following the Windows app theme, the Windows accent color, dark title bars, rounded window corners and rounded buttons/cards. Restyled tray menu with roomy items, rounded hover highlight and its own checkmark. New app icon and DPI-aware multi-size tray status icons. Modern Inno Setup wizard with branded images. Mica isn't applied to window content, because WinForms can't draw a transparent client area.

@@ -22,6 +22,8 @@ public sealed class AccountForm : Form
     private readonly long _storageUsed;
     private readonly long _storageTotal;
     private readonly Func<Task> _switchAccount;
+    private readonly Func<Task>? _disconnect;
+    private Button? _disconnectBtn;
 
     private Label _statusLabel = null!;
     private Button _switchBtn = null!;
@@ -30,8 +32,9 @@ public sealed class AccountForm : Form
     /// <summary>
     /// Result is DialogResult.Yes if the user completed an account switch.
     /// </summary>
-    public AccountForm(string? currentEmail, long storageUsed, long storageTotal, Func<Task> switchAccount)
+    public AccountForm(string? currentEmail, long storageUsed, long storageTotal, Func<Task> switchAccount, Func<Task>? disconnect = null)
     {
+        _disconnect    = disconnect;
         _currentEmail  = currentEmail;
         _storageUsed   = storageUsed;
         _storageTotal  = storageTotal;
@@ -43,7 +46,7 @@ public sealed class AccountForm : Form
     private void BuildUI()
     {
         Text            = "SyncIt — Google Account";
-        Size            = new Size(440, 340);
+        Size            = new Size(440, 400);
         StartPosition   = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox     = false;
@@ -143,9 +146,9 @@ public sealed class AccountForm : Form
         // ── Description ──
         var desc = new Label
         {
-            Text = "Switch to a different Google account to sync your files.\n" +
-                   "Your browser will open to sign in with the new account.\n" +
-                   "SyncIt will restart syncing automatically after switching.",
+            Text = "Switch account: sign in with a different Google account.\n" +
+                   "Disconnect: stop syncing and remove this account from SyncIt. " +
+                   "Your files on this PC and in Google Drive stay as they are.",
             Font      = new Font("Segoe UI", 9f),
             ForeColor = SubtleText,
             AutoSize  = true,
@@ -196,6 +199,24 @@ public sealed class AccountForm : Form
         _cancelBtn.FlatAppearance.BorderColor = CardBorder;
         _cancelBtn.Click += (_, _) => Close();
         root.Controls.Add(_cancelBtn);
+
+        if (_disconnect is not null && _currentEmail is not null)
+        {
+            _disconnectBtn = new Button
+            {
+                Text      = "Disconnect && remove account",
+                Size      = new Size(248, 32),
+                Location  = new Point(106, 296),
+                BackColor = CardBg,
+                ForeColor = AccentRed,
+                FlatStyle = FlatStyle.Flat,
+                Cursor    = Cursors.Hand,
+                Font      = new Font("Segoe UI", 9.5f),
+            };
+            _disconnectBtn.FlatAppearance.BorderColor = CardBorder;
+            _disconnectBtn.Click += OnDisconnect;
+            root.Controls.Add(_disconnectBtn);
+        }
     }
 
     private async void OnSwitchAccount(object? sender, EventArgs e)
@@ -233,6 +254,42 @@ public sealed class AccountForm : Form
             SetStatus($"Failed to switch account: {ex.Message}", AccentRed);
             _switchBtn.Enabled = true;
             _cancelBtn.Enabled = true;
+        }
+    }
+
+    private async void OnDisconnect(object? sender, EventArgs e)
+    {
+        var result = MessageBox.Show(
+            this,
+            $"Disconnect {_currentEmail} from SyncIt?\n\n" +
+            "• Syncing stops and SyncIt's access to your Google account is revoked.\n" +
+            "• The saved sign-in, sync history and folder pairs are removed from this PC.\n" +
+            "• Your files are NOT deleted, on this PC or in Google Drive.\n\n" +
+            "You can sign in again afterwards.",
+            "Disconnect & remove account",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2);
+        if (result != DialogResult.Yes || _disconnect is null) return;
+
+        _switchBtn.Enabled = false;
+        _cancelBtn.Enabled = false;
+        if (_disconnectBtn is not null) _disconnectBtn.Enabled = false;
+        try
+        {
+            SetStatus("Disconnecting...", AccentBlue);
+            await _disconnect();
+            SetStatus("Disconnected.", Color.FromArgb(16, 163, 74));
+            DialogResult = DialogResult.Abort;
+            await Task.Delay(800);
+            Close();
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Could not disconnect: {ex.Message}", AccentRed);
+            _switchBtn.Enabled = true;
+            _cancelBtn.Enabled = true;
+            if (_disconnectBtn is not null) _disconnectBtn.Enabled = true;
         }
     }
 

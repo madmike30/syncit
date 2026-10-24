@@ -1139,7 +1139,8 @@ public sealed class SyncEngine : ISyncEngine
     // Upload / Download
     // -------------------------------------------------------------------------
 
-    private async Task UploadLocalFileAsync(string absolutePath, string relativePath, SyncPair pair, CancellationToken ct)
+    private async Task UploadLocalFileAsync(string absolutePath, string relativePath, SyncPair pair, CancellationToken ct,
+        string? existingDriveFileId = null)
     {
         if (!IOFile.Exists(absolutePath)) return;
 
@@ -1157,7 +1158,11 @@ public sealed class SyncEngine : ISyncEngine
             await SetOverlayAsync(relativePath, OverlaySyncState.Syncing, ct);
 
             var mimeType   = MimeTypeFor(relativePath);
-            var uploaded   = await _driveService.UploadFileAsync(absolutePath, fileName, parentId, mimeType, progress, ct);
+            // When the file already exists on Drive (e.g. a conflict found during the first sync),
+            // update it in place. Creating a new file would leave two files with the same name on Drive.
+            var uploaded   = existingDriveFileId is not null
+                ? await _driveService.UpdateFileAsync(existingDriveFileId, absolutePath, mimeType, progress, ct)
+                : await _driveService.UploadFileAsync(absolutePath, fileName, parentId, mimeType, progress, ct);
             var localMeta  = new FileInfo(absolutePath);
 
             await _stateStore.UpsertRecordAsync(new FileRecord
@@ -1375,6 +1380,11 @@ public sealed class SyncEngine : ISyncEngine
         await ResolveConflictAsync(localRecord, remoteFile, relativePath, pair, ct);
     }
 
+    /// <summary>Drive ID to update in place, or null for Google Docs (which can't take binary content).</summary>
+    private static string? ExistingId(Google.Apis.Drive.v3.Data.File remoteFile) =>
+        string.IsNullOrEmpty(remoteFile.Id) || (remoteFile.MimeType?.StartsWith("application/vnd.google-apps.", StringComparison.Ordinal) ?? false)
+            ? null : remoteFile.Id;
+
     private async Task ResolveConflictAsync(
         FileRecord localRecord,
         Google.Apis.Drive.v3.Data.File remoteFile,
@@ -1400,7 +1410,7 @@ public sealed class SyncEngine : ISyncEngine
         switch (action.Outcome)
         {
             case ConflictOutcome.UseLocal:
-                await UploadLocalFileAsync(localAbsPath, relativePath, pair, ct);
+                await UploadLocalFileAsync(localAbsPath, relativePath, pair, ct, ExistingId(remoteFile));
                 break;
 
             case ConflictOutcome.UseRemote:
@@ -1411,8 +1421,8 @@ public sealed class SyncEngine : ISyncEngine
                 // Keep local as-is; download remote to conflict path
                 if (action.KeepBothRemotePath is not null)
                     await DownloadRemoteFileAsync(remoteFile, action.KeepBothRemotePath, pair, ct);
-                // Also upload local to ensure Drive has the local version
-                await UploadLocalFileAsync(localAbsPath, relativePath, pair, ct);
+                // Also upload local to ensure Drive has the local version (in place, no duplicate)
+                await UploadLocalFileAsync(localAbsPath, relativePath, pair, ct, ExistingId(remoteFile));
                 break;
 
             case ConflictOutcome.NoConflict:

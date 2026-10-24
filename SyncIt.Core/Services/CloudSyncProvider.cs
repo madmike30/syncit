@@ -176,6 +176,25 @@ public sealed class CloudSyncProvider : IOverlayStateStore
     public Task ClearPairAsync(string localRootPath, CancellationToken ct = default)
         => Task.CompletedTask;
 
+    /// <summary>
+    /// Removes this app's Explorer sync-root registration(s) for the current user.
+    /// Files in the folder are not touched; Explorer just stops showing SyncIt status icons.
+    /// </summary>
+    public static void UnregisterAll(string providerId, ILogger logger)
+    {
+        try
+        {
+            var prefix = providerId + "!";
+            foreach (var root in StorageProviderSyncRootManager.GetCurrentSyncRoots())
+            {
+                if (!root.Id.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+                try { StorageProviderSyncRootManager.Unregister(root.Id); logger.LogInformation("Unregistered Explorer sync root {Id}.", root.Id); }
+                catch (Exception ex) { logger.LogDebug(ex, "Failed to unregister sync root {Id}", root.Id); }
+            }
+        }
+        catch (Exception ex) { logger.LogDebug(ex, "Could not enumerate sync roots."); }
+    }
+
     public void Dispose()
     {
         if (!_registered) return;

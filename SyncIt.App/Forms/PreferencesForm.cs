@@ -77,10 +77,12 @@ public sealed class PreferencesForm : Form
         File.WriteAllText(ConfigPath, JsonSerializer.Serialize(_config, WriteOpts));
     }
 
+    private ComboBox _themeBox = null!;
+
     private void BuildUI()
     {
         Text            = "SyncIt Preferences";
-        Size            = new Size(480, 560);
+        Size            = new Size(480, 640);
         StartPosition   = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox     = false;
@@ -118,6 +120,24 @@ public sealed class PreferencesForm : Form
             FlatStyle = FlatStyle.Flat,
         };
         syncCard.Controls.Add(_startWithWindows);
+
+        // ── Appearance Card ──
+        y += 8;
+        y = AddSectionHeader(root, "Appearance", y);
+        var lookCard = MakeCard(root, ref y, 44);
+        lookCard.Controls.Add(new Label { Text = "Theme", AutoSize = true, Location = new Point(16, 12) });
+        var traySettings = TraySettings.Load();
+        _themeBox = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Location      = new Point(lookCard.Width - 136, 8),
+            Size          = new Size(120, 26),
+            Anchor        = AnchorStyles.Top | AnchorStyles.Right,
+        };
+        _themeBox.Items.AddRange(Theme.Modes);
+        var current = Array.FindIndex(Theme.Modes, m => m.Equals(traySettings.Theme, StringComparison.OrdinalIgnoreCase));
+        _themeBox.SelectedIndex = current < 0 ? 0 : current;
+        lookCard.Controls.Add(_themeBox);
 
         // ── Bandwidth Card ──
         y += 8;
@@ -168,6 +188,16 @@ public sealed class PreferencesForm : Form
             SaveConfig();
 
             AutoStartHelper.SetEnabled(_startWithWindows.Checked);
+
+            var settings = TraySettings.Load();
+            var mode = _themeBox.SelectedItem as string ?? "Light";
+            var themeChanged = !mode.Equals(settings.Theme, StringComparison.OrdinalIgnoreCase);
+            settings.Theme = mode;
+            settings.Save();
+            Theme.Initialize(mode);
+            if (themeChanged)
+                MessageBox.Show(this, "The new theme applies to windows you open from now on.",
+                    "Appearance", MessageBoxButtons.OK, MessageBoxIcon.Information);
 
             MessageBox.Show(this, "Settings saved. Some changes take effect on next sync cycle.",
                 "Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
