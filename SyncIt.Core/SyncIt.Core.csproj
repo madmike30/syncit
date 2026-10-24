@@ -25,4 +25,11 @@
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
   </ItemGroup>
 
+  <!-- Built-in Google OAuth desktop client, injected at build time from env vars
+       SYNCIT_GOOGLE_CLIENT_ID / SYNCIT_GOOGLE_CLIENT_SECRET (GitHub Actions secrets). Never commit values. -->
+  <ItemGroup Condition="'$(SYNCIT_GOOGLE_CLIENT_ID)' != '' and '$(SYNCIT_GOOGLE_CLIENT_SECRET)' != ''">
+    <AssemblyMetadata Include="SyncIt.GoogleClientId" Value="$(SYNCIT_GOOGLE_CLIENT_ID)" />
+    <AssemblyMetadata Include="SyncIt.GoogleClientSecret" Value="$(SYNCIT_GOOGLE_CLIENT_SECRET)" />
+  </ItemGroup>
+
 </Project>

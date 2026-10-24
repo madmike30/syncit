@@ -57,7 +57,9 @@ public sealed class OAuthService : IOAuthService
 
     private async Task<UserCredential> AuthorizeInternalAsync(bool forceAccountPicker, CancellationToken ct)
     {
-        var (clientId, clientSecret) = CredentialHelper.LoadClientCredentials();
+        var client = OAuthClientResolver.ResolveForApp();
+        var (clientId, clientSecret) = (client.ClientId, client.ClientSecret);
+        _logger.LogInformation("Using {Source} Google OAuth client.", client.Source);
         var dataStore = new DpapiDataStore(_config.TokenStorePath, _logger);
         var clientSecrets = new ClientSecrets { ClientId = clientId, ClientSecret = clientSecret };
 

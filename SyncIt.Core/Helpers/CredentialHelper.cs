@@ -148,6 +148,12 @@ public static class CredentialHelper
     [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern bool CredRead(string target, CredentialType type, int flags, out IntPtr credential);
 
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CredDeleteW")]
+    private static extern bool CredDelete(string target, CredentialType type, int flags);
+
+    /// <summary>Removes a saved custom OAuth client so the built-in client is used again.</summary>
+    public static void DeleteClientCredentials() => CredDelete(CredentialTarget, CredentialType.Generic, 0);
+
     [DllImport("advapi32.dll", SetLastError = true)]
     private static extern void CredFree([In] IntPtr buffer);
 

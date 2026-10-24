@@ -26,19 +26,19 @@ Google Drive for desktop is the right choice for most people. SyncIt is for a na
 - **Deletion safety:** grace period, a per-cycle deletion threshold that freezes deletes until you approve, a local trash folder and a deletion journal.
 - **Google Docs/Sheets/Slides exported to .docx/.xlsx/.pptx** on download, so they open offline in Office.
 - **Portable, no installer:** one self-contained `SyncIt.exe`; config is a readable JSON file that hot-reloads.
-- **Your own OAuth client:** you create the Google Cloud OAuth client, so no third-party service sits between you and Drive.
+- **No SyncIt server:** you sign in with Google directly, and files go straight between your PC and Google. Optionally, technical users can bring their own OAuth client.
 
 Limits to know (honest comparison):
 
 - SyncIt uses **one Google account at a time** (you can switch accounts from the tray). Drive for desktop supports up to 4 accounts at once ([Google Help](https://support.google.com/drive/answer/10838124)).
 - Windows only. No streaming/on-demand mode, no shared-drive or Google Photos features.
-- First run needs a Google Cloud OAuth Client ID/Secret (see [User Guide](docs/USER-GUIDE.md)).
+- The built-in sign-in isn't verified by Google yet, so Google shows an "unverified app" screen and limits new users. The optional own-client setup avoids both.
 
 ## Install
 
 1. Download `SyncIt-<version>-setup.exe` (installer, no admin needed) or the portable zip from [Releases](https://github.com/madmike30/syncit/releases), or build it with `publish.bat`.
 2. Put it anywhere and double-click it. No .NET install needed.
-3. On first run, paste your OAuth Client ID/Secret (one-time setup: [docs/SETUP-GOOGLE-OAUTH.md](docs/SETUP-GOOGLE-OAUTH.md)), sign in with Google, and pick the local and Drive folders.
+3. Click **Sign in with Google**, approve in your browser, and pick the local and Drive folders. See [docs/SETUP-GOOGLE-OAUTH.md](docs/SETUP-GOOGLE-OAUTH.md). Technical users can optionally use their own Google client (Advanced link).
 ## Requirements
 
 - Windows 10 or 11
@@ -62,8 +62,8 @@ publish.bat          # creates the standalone ./publish/SyncIt.exe (~100 MB, com
 ### First run
 
 1. Double-click `SyncIt.exe`
-2. Paste your Google OAuth Client ID and Secret
-3. Sign in with Google when the browser opens
+2. Click **Sign in with Google**
+3. Approve access in the browser
 4. Choose your local sync folder and Drive folder
 5. The tray icon appears — syncing begins
 
@@ -73,7 +73,7 @@ publish.bat          # creates the standalone ./publish/SyncIt.exe (~100 MB, com
 SyncIt.sln
 ├── SyncIt.Core/        Core library — models, services, safety
 ├── SyncIt.App/         Unified single-process app (sync engine + tray icon)
-└── SyncIt.Tests/       xUnit test suite (128 tests)
+└── SyncIt.Tests/       xUnit test suite (157 tests)
 ```
 
 Single-process architecture like OneDrive / Google Drive: sync engines run on background threads, tray icon on the WinForms UI thread. No child processes, no IPC.
@@ -98,7 +98,8 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full config reference
 - [User Guide](docs/USER-GUIDE.md) — quickstart, menu walkthrough, troubleshooting
 - [Configuration](docs/CONFIGURATION.md) — complete settings reference
 - [Test Plan](docs/TEST-PLAN.md) — QA test matrix
-- [Google OAuth setup](docs/SETUP-GOOGLE-OAUTH.md) — create your own client in 5 minutes
+- [Google OAuth setup](docs/SETUP-GOOGLE-OAUTH.md) — sign-in, plus optional own-client setup
+- [Maintainer: Google Cloud setup](docs/GOOGLE-CLOUD-SETUP-FOR-MAINTAINER.md) — built-in client, limits, verification
 - [Releasing](docs/RELEASING.md) — tags, draft releases, signing options
 - [Security](SECURITY.md) — credential storage and reporting issues
 
