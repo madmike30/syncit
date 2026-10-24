@@ -17,6 +17,14 @@ jobs:
         run: echo "VERSION=$('${{ github.ref_name }}'.TrimStart('v'))" >> $env:GITHUB_ENV
       - name: Test
         run: dotnet test SyncIt.sln -c Release
+      - name: Check built-in Google client (values never printed)
+        env:
+          SYNCIT_GOOGLE_CLIENT_ID: ${{ secrets.SYNCIT_GOOGLE_CLIENT_ID }}
+          SYNCIT_GOOGLE_CLIENT_SECRET: ${{ secrets.SYNCIT_GOOGLE_CLIENT_SECRET }}
+        shell: pwsh
+        run: |
+          if ($env:SYNCIT_GOOGLE_CLIENT_ID -match '\.apps\.googleusercontent\.com$' -and $env:SYNCIT_GOOGLE_CLIENT_SECRET) { Write-Host 'Built-in Google client: PRESENT (one-click sign-in enabled)' }
+          else { Write-Host '::warning::Built-in Google client: ABSENT (release will use bring-your-own-client mode)' }
       - name: Publish single-file exe
         env:
           # Built-in Google sign-in client (optional). Without these secrets the build uses bring-your-own-client mode.
