@@ -9,7 +9,7 @@
     <OutputType>WinExe</OutputType>
     <AssemblyName>SyncIt</AssemblyName>
     <RootNamespace>SyncIt.App</RootNamespace>
-    <ApplicationIcon>Resources\icon_idle.ico</ApplicationIcon>
+    <ApplicationIcon>Resources\app.ico</ApplicationIcon>
   </PropertyGroup>
 
   <!-- GC tuning for long-running tray app: workstation GC, compact LOH, trim on idle -->
@@ -35,6 +35,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="Resources\app.ico" />
     <EmbeddedResource Include="Resources\icon_idle.ico" />
     <EmbeddedResource Include="Resources\icon_syncing.ico" />
     <EmbeddedResource Include="Resources\icon_paused.ico" />

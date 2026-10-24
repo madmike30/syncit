@@ -2,6 +2,13 @@
 
 A lightweight, bidirectional Google Drive sync tool for Windows. Keep a local folder in sync with Google Drive — simple, reliable, and fully under your control.
 
+<p align="center"><img src="docs/images/app-icon.png" width="96" alt="SyncIt icon"></p>
+
+| Light | Dark |
+|---|---|
+| ![Dashboard](docs/images/dashboard-light.png) | ![Dashboard dark](docs/images/dashboard-dark.png) |
+| ![Tray menu](docs/images/tray-menu-light.png) | ![Tray menu dark](docs/images/tray-menu-dark.png) |
+
 ## Features
 
 - **Bidirectional sync** — local changes upload instantly via FileSystemWatcher; remote changes download via periodic polling
@@ -11,6 +18,7 @@ A lightweight, bidirectional Google Drive sync tool for Windows. Keep a local fo
 - **Explorer integration** — sync status icons (✓ synced / ↻ syncing) in Windows Explorer via the Cloud Files API
 - **Selective sync** — choose specific Drive subfolders; filter files with glob-based include/exclude patterns
 - **Google Docs export** — auto-convert Docs → .docx, Sheets → .xlsx, Slides → .pptx, Drawings → .svg
+- **Windows 11 look** — Fluent-style windows and tray menu, light/dark that follows Windows, your accent color, rounded corners, crisp high-DPI icons
 - **Support tools** — tray menu: About (version), Open Logs Folder, Export Logs (zip with tokens/secrets/emails redacted); crash reports written to the logs folder
 - **System tray UI** — icon states, account info, storage bar, recent activity, and detailed status window
 - **Secure credentials** — OAuth2 tokens encrypted with DPAPI; client secrets stored in Windows Credential Manager

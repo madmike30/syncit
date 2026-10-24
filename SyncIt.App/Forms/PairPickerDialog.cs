@@ -84,4 +84,10 @@ internal sealed class PairPickerDialog : Form
         public override string ToString() =>
             string.IsNullOrEmpty(Pair.RemoteFolderName) ? Pair.Id : Pair.RemoteFolderName;
     }
+    // Fluent theme (see Theme.cs): remaps colors/fonts by role, dark mode, rounded window corners.
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        Theme.Apply(this);
+    }
 }

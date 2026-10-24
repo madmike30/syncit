@@ -73,7 +73,7 @@ public sealed class FirstRunForm : Form
 
         _signInBtn = new Button
         {
-            Text = "Sign in with Google", Size = new Size(280, 48), Location = new Point(0, y),
+            Text = "Sign in with Google", Size = new Size(300, 48), Location = new Point(0, y),
             BackColor = AccentBlue, ForeColor = Color.White, FlatStyle = FlatStyle.Flat,
             Font = new Font("Segoe UI Semibold", 12f), Cursor = Cursors.Hand,
         };
@@ -345,13 +345,15 @@ public sealed class FirstRunForm : Form
 
     private static Panel Card(Control parent, int y, int height)
     {
-        var card = new Panel { Location = new Point(0, y), Size = new Size(ContentWidth, height), BackColor = CardBg };
-        card.Paint += (_, e) =>
-        {
-            using var pen = new Pen(CardBorder);
-            e.Graphics.DrawRectangle(pen, 0, 0, card.Width - 1, card.Height - 1);
-        };
+        var card = new Panel { Location = new Point(0, y), Size = new Size(ContentWidth, height) };
+        Theme.MakeCard(card);
         parent.Controls.Add(card);
         return card;
+    }
+    // Fluent theme (see Theme.cs): remaps colors/fonts by role, dark mode, rounded window corners.
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        Theme.Apply(this);
     }
 }

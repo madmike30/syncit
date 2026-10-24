@@ -451,6 +451,7 @@ public sealed class SyncItApp : ApplicationContext
     private void InitializeNotifyIcon()
     {
         _menu = new ContextMenuStrip { ShowImageMargin = false };
+        FluentMenuRenderer.Style(_menu);
 
         _statusItem = new ToolStripMenuItem("SyncIt — Starting...") { Enabled = false };
         _statusItem.Font = new Font(_statusItem.Font, FontStyle.Bold);

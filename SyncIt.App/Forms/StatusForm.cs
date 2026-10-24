@@ -218,4 +218,10 @@ public sealed class StatusForm : Form
         if (bytes >= 1024) return $"{bytes / 1024.0:F1} KB";
         return $"{bytes} B";
     }
+    // Fluent theme (see Theme.cs): remaps colors/fonts by role, dark mode, rounded window corners.
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        Theme.Apply(this);
+    }
 }

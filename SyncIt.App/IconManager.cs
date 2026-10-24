@@ -12,6 +12,9 @@ public sealed class IconManager : IDisposable
     public Icon ErrorIcon   { get; }
     public Icon WarningIcon { get; }
 
+    /// <summary>Full-color multi-size application icon (window title bars, dialogs).</summary>
+    public static Icon AppIcon { get; } = LoadOrGenerate("app", Color.FromArgb(0, 120, 215), 32);
+
     public IconManager()
     {
         IdleIcon    = LoadOrGenerate("icon_idle",    Color.FromArgb(0, 120, 215));
@@ -21,7 +24,7 @@ public sealed class IconManager : IDisposable
         WarningIcon = LoadOrGenerate("icon_warning", Color.FromArgb(255, 185, 0));
     }
 
-    private static Icon LoadOrGenerate(string resourceName, Color fallbackColor)
+    private static Icon LoadOrGenerate(string resourceName, Color fallbackColor, int size = 0)
     {
         var asm  = typeof(IconManager).Assembly;
         var name = asm.GetManifestResourceNames()
@@ -30,7 +33,9 @@ public sealed class IconManager : IDisposable
         if (name is not null)
         {
             using var stream = asm.GetManifestResourceStream(name)!;
-            return new Icon(stream, 16, 16);
+            // Pick the frame matching the current DPI so tray icons stay crisp at 125%/150%/200%.
+            var px = size > 0 ? size : SystemInformation.SmallIconSize.Width;
+            return new Icon(stream, px, px);
         }
 
         using var bmp = new Bitmap(16, 16);

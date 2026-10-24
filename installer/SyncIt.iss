@@ -1,4 +1,4 @@
-﻿; Inno Setup script for SyncIt. Build: iscc /DAppVersion=1.0.0 /DSourceExe=..\publish\SyncIt.exe installer\SyncIt.iss
+; Inno Setup script for SyncIt. Build: iscc /DAppVersion=1.0.0 /DSourceExe=..\publish\SyncIt.exe installer\SyncIt.iss
 #ifndef AppVersion
   #define AppVersion "1.0.0"
 #endif
@@ -24,8 +24,22 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\SyncIt.exe
 LicenseFile=..\LICENSE
-SetupIconFile=..\SyncIt.App\Resources\icon_idle.ico
+SetupIconFile=assets\app.ico
+WizardStyle=modern
+WizardSizePercent=110
+WizardImageFile=assets\wizard-large.bmp,assets\wizard-large-2x.bmp
+WizardSmallImageFile=assets\wizard-small.bmp,assets\wizard-small-2x.bmp
+DisableWelcomePage=no
+DisableDirPage=auto
+DisableReadyPage=yes
+ShowLanguageDialog=no
+AppCopyright=Copyright (c) 2026 SyncIt contributors
+VersionInfoVersion={#AppVersion}
+UninstallDisplayName=SyncIt
 CloseApplications=yes
+
+[Messages]
+WelcomeLabel2=This will install SyncIt {#AppVersion} on your computer.%n%nSyncIt keeps a folder on this PC and a folder in your Google Drive in sync. No admin rights needed.
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
@@ -39,6 +53,6 @@ Name: "{autoprograms}\SyncIt"; Filename: "{app}\SyncIt.exe"
 Name: "{autodesktop}\SyncIt"; Filename: "{app}\SyncIt.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\SyncIt.exe"; Description: "Launch SyncIt"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\SyncIt.exe"; Description: "Open SyncIt now"; Flags: nowait postinstall skipifsilent
 
 ; Settings and tokens in %APPDATA%\SyncIt are kept on uninstall on purpose (your sync state).
