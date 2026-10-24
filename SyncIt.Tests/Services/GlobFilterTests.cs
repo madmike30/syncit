@@ -104,17 +104,17 @@ public sealed class GlobFilterTests
     [Fact]
     public void InvalidateCache_ClearsCompiledGlobs()
     {
-        var pair = MakePair(excludes: ["*.tmp"]);
+        var pair = MakePair(excludes: ["*.bak"]);
 
         // Prime the cache
-        _filter.IsExcluded("file.tmp", pair).Should().BeTrue();
+        _filter.IsExcluded("file.bak", pair).Should().BeTrue();
 
         // Change the pair's globs and invalidate
         pair.ExcludeGlobs = ["*.log"];
         _filter.InvalidateCache(pair.Id);
 
-        // Now .tmp should NOT be excluded (new globs applied)
-        _filter.IsExcluded("file.tmp", pair).Should().BeFalse();
+        // Now .bak should NOT be excluded (new globs applied)
+        _filter.IsExcluded("file.bak", pair).Should().BeFalse();
         _filter.IsExcluded("file.log", pair).Should().BeTrue();
     }
 

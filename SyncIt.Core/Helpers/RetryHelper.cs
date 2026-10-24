@@ -22,11 +22,8 @@ public static class RetryHelper
         var maxDelayMs = config?.MaxDelayMs ?? 30000;
 
         return Policy
-            .Handle<Google.GoogleApiException>(ex =>
-                ex.HttpStatusCode is
-                    System.Net.HttpStatusCode.TooManyRequests or
-                    System.Net.HttpStatusCode.ServiceUnavailable or
-                    System.Net.HttpStatusCode.InternalServerError)
+            // 429, 5xx and Drive's 403 rate-limit errors (userRateLimitExceeded etc.)
+            .Handle<Google.GoogleApiException>(ex => DriveErrors.IsTransient(ex))
             .Or<HttpRequestException>()
             .Or<TaskCanceledException>(ex => ex.CancellationToken == default)
             .WaitAndRetryAsync(

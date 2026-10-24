@@ -10,6 +10,7 @@ public enum ActivityType
     Renamed,
     FolderCreated,
     FolderDeleted,
+    Info,
 }
 
 /// <summary>

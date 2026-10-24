@@ -61,6 +61,9 @@ public sealed class SyncEngine : ISyncEngine
     /// <summary>Accumulated sync metrics for this engine.</summary>
     public SyncMetrics Metrics => _metrics;
 
+    /// <summary>How long a changed file must be quiet before upload (shorter in tests).</summary>
+    public TimeSpan SettleTime { get; init; } = FileLockHelper.SettleTime;
+
     public event Action<SyncPairStatus>? StatusChanged;
 
     public SyncEngine(
@@ -433,7 +436,28 @@ public sealed class SyncEngine : ISyncEngine
             var pageToken = await _stateStore.GetPageTokenAsync(pair.Id);
             if (pageToken is null) return; // not initialized yet
 
-            var (changes, newToken) = await _driveService.ListChangesAsync(pageToken, ct);
+            IReadOnlyList<Change> changes;
+            string newToken;
+            try
+            {
+                (changes, newToken) = await _driveService.ListChangesAsync(pageToken, ct);
+            }
+            catch (Exception ex) when (DriveErrors.IsExpiredPageToken(ex))
+            {
+                // The saved change token expired (e.g. the PC was off for a long time). Changes
+                // since then are unknown, so take a fresh token and rescan both sides. The rescan
+                // matches existing files and never deletes.
+                _logger.LogWarning("Drive change token expired for pair {Id}; running a full rescan.", pair.Id);
+                var freshToken = await _driveService.GetStartPageTokenAsync(ct);
+                await _stateStore.SavePageTokenAsync(pair.Id, freshToken);
+                SetState(SyncState.Syncing, "Rescanning...");
+                await InitialSyncAsync(pair, ct);
+                LogActivity(ActivityType.Info, "", details: "Full rescan after Drive change history expired");
+                await _stateStore.SetLastSyncTimeAsync(pair.Id, DateTime.UtcNow);
+                _metrics.EndCycle();
+                SetState(SyncState.Idle);
+                return;
+            }
             await _stateStore.SavePageTokenAsync(pair.Id, newToken);
 
             foreach (var change in changes)
@@ -498,7 +522,7 @@ public sealed class SyncEngine : ISyncEngine
         const int maxConcurrency = 8;
 
         // Collect remote files into a dictionary for O(1) lookup
-        var remoteFiles = new Dictionary<string, Google.Apis.Drive.v3.Data.File>(StringComparer.OrdinalIgnoreCase);
+        var remoteFiles = new Dictionary<string, Google.Apis.Drive.v3.Data.File>(PathKey.Comparer);
 
         if (pair.SelectedSubfolders.Count > 0)
         {
@@ -531,7 +555,7 @@ public sealed class SyncEngine : ISyncEngine
                 {
                     var syncRel = GetRemoteSyncRelativePath(file, rel);
                     if (_globFilter.IsIncluded(syncRel, pair))
-                        remoteFiles[syncRel] = file;
+                        AddRemote(remoteFiles, syncRel, file);
                 }
             }
         }
@@ -542,14 +566,14 @@ public sealed class SyncEngine : ISyncEngine
             {
                 var syncRel = GetRemoteSyncRelativePath(file, rel);
                 if (_globFilter.IsIncluded(syncRel, pair))
-                    remoteFiles[syncRel] = file;
+                    AddRemote(remoteFiles, syncRel, file);
             }
         }
 
         _logger.LogInformation("Initial sync: found {Remote} remote files for pair '{Id}'.", remoteFiles.Count, pair.Id);
 
         // Collect local files and categorize them
-        var localFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var localFiles = new HashSet<string>(PathKey.Comparer);
         var toUpload = new List<(string absPath, string rel)>();
         var toBothExist = new List<(string absPath, string rel, Google.Apis.Drive.v3.Data.File remoteFile)>();
 
@@ -746,7 +770,7 @@ public sealed class SyncEngine : ISyncEngine
         const int maxConcurrency = 8;
 
         // Determine which subfolders contain new files and list remote files for them
-        var remoteFiles = new Dictionary<string, DriveFile>(StringComparer.OrdinalIgnoreCase);
+        var remoteFiles = new Dictionary<string, DriveFile>(PathKey.Comparer);
         var subfoldersToList = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var (_, rel) in newLocalFiles)
@@ -774,7 +798,7 @@ public sealed class SyncEngine : ISyncEngine
             {
                 var syncRel = GetRemoteSyncRelativePath(file, rel);
                 if (_globFilter.IsIncluded(syncRel, pair))
-                    remoteFiles[syncRel] = file;
+                    AddRemote(remoteFiles, syncRel, file);
             }
         }
 
@@ -806,10 +830,8 @@ public sealed class SyncEngine : ISyncEngine
             async (item, token) => await UploadLocalFileAsync(item.absPath, item.rel, pair, token));
 
         // Download remote-only files (files on Drive but not locally)
-        var localRels = new HashSet<string>(newLocalFiles.Select(f => f.rel), StringComparer.OrdinalIgnoreCase);
-        var toDownload = remoteFiles.Where(r => !localRels.Contains(r.Key))
-            .Where(r => !newLocalFiles.Any(f => f.rel.Equals(r.Key, StringComparison.OrdinalIgnoreCase)))
-            .ToList();
+        var localRels = new HashSet<string>(newLocalFiles.Select(f => f.rel), PathKey.Comparer);
+        var toDownload = remoteFiles.Where(r => !localRels.Contains(r.Key)).ToList();
 
         // Only download files that also have no baseline (truly new remote files)
         var toDownloadNew = new List<KeyValuePair<string, DriveFile>>();
@@ -887,9 +909,11 @@ public sealed class SyncEngine : ISyncEngine
             return;
         }
 
-        if (IOFile.Exists(absolutePath) && FileLockHelper.IsLocked(absolutePath) && ev.RetryCount < FileLockHelper.MaxRetries)
+        // Wait until the file is readable and has stopped changing (apps write in bursts;
+        // uploading mid-save sends a half-written file).
+        if (IOFile.Exists(absolutePath) && !FileLockHelper.IsSettled(absolutePath, SettleTime) && ev.RetryCount < FileLockHelper.MaxRetries)
         {
-            _logger.LogDebug("File locked: {Path} — requeueing (attempt {N})", ev.RelativePath, ev.RetryCount + 1);
+            _logger.LogDebug("File busy or still changing: {Path} — requeueing (attempt {N})", ev.RelativePath, ev.RetryCount + 1);
             await Task.Delay(FileLockHelper.RetryDelay(ev.RetryCount), ct);
             _changeQueue.Enqueue(ev with { RetryCount = ev.RetryCount + 1 });
             return;
@@ -897,9 +921,42 @@ public sealed class SyncEngine : ISyncEngine
 
         var baseline = await _stateStore.GetRecordAsync(pair.Id, SyncSide.Remote, ev.RelativePath);
 
-        if (ev.Kind == ChangeKind.Renamed && ev.OldRelativePath is not null)
+        if (ev.Kind == ChangeKind.Renamed && ev.OldRelativePath is not null
+            && await _stateStore.GetRecordAsync(pair.Id, SyncSide.Remote, ev.OldRelativePath) is { DriveFileId: not null } movedBaseline)
         {
-            // Upload new path first (safe order: create before delete)
+            // Rename/move the Drive file in place: no re-upload, keeps its ID, history and sharing.
+            // Also covers case-only renames ("report.pdf" -> "Report.pdf").
+            var newName   = Path.GetFileName(ev.RelativePath);
+            var newParent = Path.GetDirectoryName(ev.RelativePath.Replace('/', Path.DirectorySeparatorChar)) ?? string.Empty;
+            var newParentId = newParent.Length > 0
+                ? await _driveService.EnsureFolderPathAsync(pair.RemoteFolderId, newParent, ct)
+                : pair.RemoteFolderId;
+            var moved = await _driveService.MoveFileAsync(movedBaseline.DriveFileId, newName, newParentId, ct);
+
+            // Re-key baselines: remove the old path first (matters for case-only renames).
+            await _stateStore.RemoveRecordAsync(pair.Id, SyncSide.Remote, ev.OldRelativePath);
+            await _stateStore.RemoveRecordAsync(pair.Id, SyncSide.Local, ev.OldRelativePath);
+            await _stateStore.UpsertRecordAsync(BuildRemoteRecord(pair.Id, ev.RelativePath, moved));
+            var movedLocal = await BuildLocalRecordAsync(pair.Id, ev.RelativePath, absolutePath);
+            if (movedLocal is not null)
+            {
+                if (!string.Equals(movedLocal.ContentHash, moved.Md5Checksum ?? movedBaseline.ContentHash, StringComparison.OrdinalIgnoreCase))
+                {
+                    // Content also changed while renaming (e.g. save-as over): update in place.
+                    await UploadLocalFileAsync(absolutePath, ev.RelativePath, pair, ct, moved.Id);
+                }
+                else
+                {
+                    await _stateStore.UpsertRecordAsync(movedLocal);
+                }
+            }
+            await SetOverlayAsync(ev.RelativePath, OverlaySyncState.Synced, ct);
+            LogActivity(ActivityType.Renamed, ev.RelativePath, details: $"Renamed from {ev.OldRelativePath}");
+            _logger.LogInformation("Renamed on Drive: '{Old}' → '{New}'", ev.OldRelativePath, ev.RelativePath);
+        }
+        else if (ev.Kind == ChangeKind.Renamed && ev.OldRelativePath is not null)
+        {
+            // Not on Drive yet under the old name: upload the new path (create before delete)
             var oldBaseline = await _stateStore.GetRecordAsync(pair.Id, SyncSide.Remote, ev.OldRelativePath);
             await UploadLocalFileAsync(absolutePath, ev.RelativePath, pair, ct); // updates both baselines
 
@@ -1030,6 +1087,36 @@ public sealed class SyncEngine : ISyncEngine
         CancellationToken ct)
     {
         var localAbsPath = PathHelper.ToAbsolute(pair.LocalPath, relativePath);
+
+        // Case-only rename on Drive ("notes.txt" -> "Notes.txt"): rename the local file too.
+        // Windows treats both names as the same file, so the normal rename path missed it.
+        if (file.Id is not null &&
+            await _stateStore.GetRecordByDriveFileIdAsync(pair.Id, SyncSide.Remote, file.Id) is { } byId &&
+            PathKey.IsCaseOnlyChange(byId.RelativePath, relativePath))
+        {
+            var oldAbs = PathHelper.ToAbsolute(pair.LocalPath, byId.RelativePath);
+            if (IOFile.Exists(oldAbs))
+            {
+                var temp = oldAbs + ".syncit-tmp-rename";
+                _atomicWriter.SuppressPath(oldAbs);
+                _atomicWriter.SuppressPath(localAbsPath);
+                IOFile.Move(oldAbs, temp);
+                IOFile.Move(temp, localAbsPath);
+            }
+            var oldLocal = await _stateStore.GetRecordAsync(pair.Id, SyncSide.Local, byId.RelativePath);
+            await _stateStore.RemoveRecordAsync(pair.Id, SyncSide.Remote, byId.RelativePath);
+            await _stateStore.RemoveRecordAsync(pair.Id, SyncSide.Local, byId.RelativePath);
+            byId.RelativePath = relativePath;
+            await _stateStore.UpsertRecordAsync(byId);
+            if (oldLocal is not null)
+            {
+                oldLocal.RelativePath = relativePath;
+                await _stateStore.UpsertRecordAsync(oldLocal);
+            }
+            LogActivity(ActivityType.Renamed, relativePath, details: $"Renamed from {byId.RelativePath}");
+            _logger.LogInformation("Remote case-only rename: '{Old}' → '{New}'", byId.RelativePath, relativePath);
+        }
+
         var localBaseline = await _stateStore.GetRecordAsync(pair.Id, SyncSide.Local, relativePath);
         var remoteBaseline = await _stateStore.GetRecordAsync(pair.Id, SyncSide.Remote, relativePath);
 
@@ -1149,6 +1236,35 @@ public sealed class SyncEngine : ISyncEngine
         var parentId   = parentRel.Length > 0
             ? await _driveService.EnsureFolderPathAsync(pair.RemoteFolderId, parentRel, ct)
             : pair.RemoteFolderId;
+
+        // Look before creating: if Drive already has a file with this name here (no baseline yet,
+        // e.g. after a reset, a crash mid-upload, or another device), reuse it instead of
+        // creating a duplicate. Same content: just record it. Different content: conflict rules.
+        if (existingDriveFileId is null)
+        {
+            var existingRemote = await _driveService.FindFileAsync(parentId, fileName, ct);
+            if (existingRemote?.Id is not null)
+            {
+                var localHash = await HashHelper.ComputeMd5Async(absolutePath, ct);
+                var info = new FileInfo(absolutePath);
+                var localRecord = new FileRecord
+                {
+                    SyncPairId = pair.Id, Side = SyncSide.Local, RelativePath = relativePath,
+                    SizeBytes = info.Length, ModifiedUtc = info.LastWriteTimeUtc, ContentHash = localHash,
+                };
+                if (string.Equals(localHash, existingRemote.Md5Checksum, StringComparison.OrdinalIgnoreCase))
+                {
+                    await _stateStore.UpsertRecordAsync(localRecord);
+                    await _stateStore.UpsertRecordAsync(BuildRemoteRecord(pair.Id, relativePath, existingRemote));
+                    await SetOverlayAsync(relativePath, OverlaySyncState.Synced, ct);
+                    _logger.LogInformation("Already on Drive (same content), not uploading again: {Path}", relativePath);
+                    return;
+                }
+                _logger.LogInformation("Drive already has '{Path}' with different content; applying conflict rules instead of creating a copy.", relativePath);
+                await ResolveConflictAsync(localRecord, existingRemote, relativePath, pair, ct);
+                return;
+            }
+        }
 
         await _transferSlim.WaitAsync(ct);
         try
@@ -1472,6 +1588,33 @@ public sealed class SyncEngine : ISyncEngine
             await _stateStore.SavePageTokenAsync(pair.Id, token);
             _logger.LogDebug("Initialized Drive page token for pair {Id}", pair.Id);
         }
+    }
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _duplicateRemotePaths = new(PathKey.Comparer);
+
+    /// <summary>Paths that have two or more files with the same name in the same Drive folder.</summary>
+    public IReadOnlyCollection<string> DuplicateRemotePaths => _duplicateRemotePaths.Keys.ToList();
+
+    /// <summary>
+    /// Adds a listed Drive item. Drive allows several files with the same name in one folder;
+    /// a Windows folder can't hold them. SyncIt keeps the most recently modified one and warns,
+    /// instead of silently picking one at random.
+    /// </summary>
+    private void AddRemote(Dictionary<string, DriveFile> remoteFiles, string relativePath, DriveFile file)
+    {
+        if (remoteFiles.TryGetValue(relativePath, out var existing) && existing.Id != file.Id)
+        {
+            if (_duplicateRemotePaths.TryAdd(relativePath, 0))
+            {
+                _logger.LogWarning(
+                    "Google Drive has more than one item named '{Path}'. SyncIt syncs the most recently modified one; " +
+                    "rename or remove the extra copy on drive.google.com.", relativePath);
+                LogActivity(ActivityType.Error, relativePath, details: "Duplicate name on Google Drive: more than one file with this name. Syncing the newest.");
+            }
+            var newer = (file.ModifiedTimeDateTimeOffset ?? DateTimeOffset.MinValue) > (existing.ModifiedTimeDateTimeOffset ?? DateTimeOffset.MinValue);
+            if (!newer) return;
+        }
+        remoteFiles[relativePath] = file;
     }
 
     private string? TryMakeRelative(string rootPath, string absolutePath)

@@ -16,6 +16,7 @@ A lightweight, bidirectional Google Drive sync tool for Windows. Keep a local fo
 - **Conflict resolution** — four configurable policies: LastWriteWins, KeepBoth, PreferLocal, PreferRemote
 - **Deletion safety** — three-layer protection with baseline verification, grace period, and threshold freeze before any file is removed
 - **Explorer integration** — sync status icons (✓ synced / ↻ syncing) in Windows Explorer via the Cloud Files API
+- **Robust sync** — no duplicate uploads (looks up existing Drive files first), real renames incl. case-only, waits for files still being written, skips temp/lock files, Unicode (NFC/NFD) and long-path safe, automatic recovery from expired change tokens, rate-limit backoff
 - **Selective sync** — choose specific Drive subfolders; filter files with glob-based include/exclude patterns
 - **Google Docs export** — auto-convert Docs → .docx, Sheets → .xlsx, Slides → .pptx, Drawings → .svg
 - **Windows 11 look** — Fluent-style windows and tray menu, light/dark that follows Windows, your accent color, rounded corners, crisp high-DPI icons
@@ -108,6 +109,7 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full config reference
 - [Test Plan](docs/TEST-PLAN.md) — QA test matrix
 - [Google OAuth setup](docs/SETUP-GOOGLE-OAUTH.md) — sign-in, plus optional own-client setup
 - [Maintainer: Google Cloud setup](docs/GOOGLE-CLOUD-SETUP-FOR-MAINTAINER.md) — built-in client, limits, verification
+- [Roadmap](docs/ROADMAP.md) — planned features (multi-account)
 - [Releasing](docs/RELEASING.md) — tags, draft releases, signing options
 - [Privacy Policy](docs/PRIVACY.md) · [Terms of Use](docs/TERMS.md)
 - [Security](SECURITY.md) — credential storage and reporting issues

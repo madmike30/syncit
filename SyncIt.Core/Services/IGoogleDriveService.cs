@@ -103,6 +103,16 @@ public interface IGoogleDriveService
     /// Get the authenticated user's account email and storage quota.
     /// </summary>
     Task<DriveAccountInfo> GetAccountInfoAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Find a regular (non-folder, non-Google-Doc, not trashed) file by exact name in a folder.
+    /// Used before creating a file so an existing one is reused instead of duplicated.
+    /// Returns the newest match, or null.
+    /// </summary>
+    Task<DriveFile?> FindFileAsync(string parentFolderId, string name, CancellationToken ct = default);
+
+    /// <summary>Rename and/or move a Drive item in place (keeps its ID, history and sharing).</summary>
+    Task<DriveFile> MoveFileAsync(string fileId, string newName, string newParentId, CancellationToken ct = default);
 }
 
 /// <summary>Drive subfolder descriptor returned by ListSubfoldersAsync.</summary>

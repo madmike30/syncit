@@ -58,6 +58,21 @@ public static class PathHelper
     }
 
     /// <summary>
+    /// Path for Win32 calls (P/Invoke) that still have the 260-character MAX_PATH limit.
+    /// Long paths get the \\?\ prefix (\\?\UNC\ for network shares). Managed .NET IO
+    /// already handles long paths, so this is only needed for native calls.
+    /// </summary>
+    public static string ToExtendedPath(string path)
+    {
+        if (string.IsNullOrEmpty(path) || path.StartsWith(@"\\?\", StringComparison.Ordinal)) return path;
+        var full = Path.GetFullPath(path);
+        if (full.Length < 248) return full;
+        return full.StartsWith(@"\\", StringComparison.Ordinal)
+            ? @"\\?\UNC\" + full[2..]
+            : @"\\?\" + full;
+    }
+
+    /// <summary>
     /// Ensure a directory exists, creating it (and all parents) if not.
     /// </summary>
     public static void EnsureDirectory(string dirPath)

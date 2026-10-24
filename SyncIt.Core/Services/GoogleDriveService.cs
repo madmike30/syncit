@@ -353,6 +353,36 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
     // Metadata
     // -------------------------------------------------------------------------
 
+    public async Task<DriveFile?> FindFileAsync(string parentFolderId, string name, CancellationToken ct = default)
+    {
+        var request = _drive.Files.List();
+        request.Q = $"'{parentFolderId}' in parents and name = '{EscapeDriveQuery(name)}' and trashed = false " +
+                    "and not mimeType contains 'application/vnd.google-apps.'";
+        request.Fields = $"files({FileFields})";
+        request.OrderBy = "modifiedTime desc";
+        request.PageSize = 10;
+        var result = await _retryPolicy.ExecuteAsync(() => request.ExecuteAsync(ct));
+        // Drive's name match is case-insensitive; prefer an exact match.
+        return result.Files?.FirstOrDefault(f => string.Equals(f.Name, name, StringComparison.Ordinal))
+            ?? result.Files?.FirstOrDefault();
+    }
+
+    public async Task<DriveFile> MoveFileAsync(string fileId, string newName, string newParentId, CancellationToken ct = default)
+    {
+        var current = await GetFileAsync(fileId, ct) ?? throw new FileNotFoundException($"Drive file {fileId} not found.");
+        var request = _drive.Files.Update(new DriveFile { Name = newName }, fileId);
+        request.Fields = FileFields;
+        if (newParentId == "root")
+            newParentId = (await GetFileAsync("root", ct))?.Id ?? newParentId;
+        var oldParents = current.Parents ?? Array.Empty<string>();
+        if (!oldParents.Contains(newParentId))
+        {
+            request.AddParents = newParentId;
+            if (oldParents.Count > 0) request.RemoveParents = string.Join(",", oldParents);
+        }
+        return await _retryPolicy.ExecuteAsync(() => request.ExecuteAsync(ct));
+    }
+
     public async Task<DriveFile?> GetFileAsync(string fileId, CancellationToken ct = default)
     {
         try

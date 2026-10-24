@@ -51,6 +51,24 @@ public static class FileLockHelper
     public static TimeSpan RetryDelay(int retryCount) =>
         TimeSpan.FromSeconds(Math.Min(Math.Pow(2, retryCount), 60));
 
+    /// <summary>
+    /// True when the file has not been written for <paramref name="quiet"/> and can be read.
+    /// Apps such as Office, browsers and editors write in bursts; uploading mid-write sends
+    /// a half-written file, so SyncIt waits for the file to settle first.
+    /// </summary>
+    public static bool IsSettled(string filePath, TimeSpan quiet, DateTime? nowUtc = null)
+    {
+        try
+        {
+            var age = (nowUtc ?? DateTime.UtcNow) - File.GetLastWriteTimeUtc(filePath);
+            return age >= quiet && IsReadable(filePath);
+        }
+        catch { return false; }
+    }
+
+    /// <summary>How long a file must be unchanged before it is uploaded.</summary>
+    public static readonly TimeSpan SettleTime = TimeSpan.FromSeconds(2);
+
     /// <summary>Maximum retries before giving up on a locked file.</summary>
     public const int MaxRetries = 5;
 }

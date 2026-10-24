@@ -1,5 +1,17 @@
 ﻿# Changelog
 
+## 1.2.0 - 2026-10-24
+Sync engine hardening (review recommendations):
+- **Duplicate names on Drive are detected.** Google Drive allows two files with the same name in one folder; SyncIt now warns (log + Activity) and syncs the newest one instead of picking one at random.
+- **No duplicate uploads.** Before creating a new file on Drive, SyncIt checks whether a file with that name already exists in the folder. Identical content is adopted; different content goes through your conflict policy and the existing file is updated in place.
+- **Files that are still being written or are locked wait.** A file must be quiet for 2 seconds and readable before upload; otherwise it is retried. Office/LibreOffice lock files, browser partial downloads (.crdownload, .part, .partial) and editor temp files are never synced.
+- **Renames are renames.** Renaming or moving a synced file renames/moves it on Drive (no re-upload), including case-only renames (
+otes.txt → Notes.txt) in both directions.
+- **Long paths** (over 260 characters) work with Explorer status integration.
+- **Expired change token recovers automatically.** If Drive reports the change token is no longer valid (e.g. after a long time offline), SyncIt takes a fresh token and runs a safe full rescan (never deletes).
+- **Unicode-safe path matching.** Names with accents/Hebrew written in different Unicode forms (NFC/NFD) and case differences are matched, not duplicated.
+- **Rate limits are retried with backoff.** HTTP 429 and 403 rate-limit errors (userRateLimitExceeded, ateLimitExceeded, ...) are retried with exponential backoff; real permission errors are not.
+- Planned (P2): multiple Google accounts - see [docs/ROADMAP.md](docs/ROADMAP.md).
 ## 1.1.3 - 2026-10-24
 - **Fixed one-click sign-in falling back to the own-client page.** The built-in client ID baked into release builds had a trailing newline (from how the build secret was set), so the app treated it as invalid. Values are now trimmed, the release check is strict, and the secrets were re-set without whitespace.
 

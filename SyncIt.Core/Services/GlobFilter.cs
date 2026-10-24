@@ -20,10 +20,35 @@ public sealed class GlobFilter : IGlobFilter
 
     public bool IsIncluded(string relativePath, SyncPair pair) => !IsExcluded(relativePath, pair);
 
+    /// <summary>
+    /// Temporary and lock files that are never synced, whatever the pair's own patterns say:
+    /// Office owner files, browser partial downloads, LibreOffice and editor lock/swap files.
+    /// Syncing them creates junk on Drive and fails while the app holds them open.
+    /// </summary>
+    public static bool IsTemporaryFileName(string fileName)
+    {
+        if (string.IsNullOrEmpty(fileName)) return false;
+        if (fileName.StartsWith("~$", StringComparison.Ordinal)) return true;            // Office owner file
+        if (fileName.StartsWith(".~lock.", StringComparison.Ordinal) && fileName.EndsWith('#')) return true; // LibreOffice
+        if (fileName.StartsWith("~", StringComparison.Ordinal) && fileName.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)) return true;
+        var ext = Path.GetExtension(fileName);
+        return ext.Equals(".tmp", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".crdownload", StringComparison.OrdinalIgnoreCase)  // Chrome/Edge
+            || ext.Equals(".partial", StringComparison.OrdinalIgnoreCase)     // Edge (old)
+            || ext.Equals(".part", StringComparison.OrdinalIgnoreCase)        // Firefox
+            || ext.Equals(".download", StringComparison.OrdinalIgnoreCase)    // Safari
+            || ext.Equals(".swp", StringComparison.OrdinalIgnoreCase)         // vim
+            || fileName.Contains(".syncit-tmp-", StringComparison.OrdinalIgnoreCase);
+    }
+
     public bool IsExcluded(string relativePath, SyncPair pair)
     {
         // Normalize path to forward slashes (glob patterns use /)
         var path = relativePath.Replace('\\', '/');
+
+        // Rule 0: built-in temporary/lock files
+        var slash = path.LastIndexOf('/');
+        if (IsTemporaryFileName(slash >= 0 ? path[(slash + 1)..] : path)) return true;
 
         var (excludes, includes) = GetCompiledGlobs(pair);
 

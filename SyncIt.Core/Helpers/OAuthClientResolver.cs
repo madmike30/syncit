@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 
 namespace SyncIt.Core.Helpers;
 
@@ -21,7 +21,7 @@ public static class OAuthClientResolver
     public static OAuthClient? Resolve((string Id, string Secret)? custom, string? builtInId, string? builtInSecret)
     {
         if (custom is { } c && OAuthClientValidator.ValidateClientId(c.Id?.Trim()) is null && !string.IsNullOrWhiteSpace(c.Secret))
-            return new OAuthClient(c.Id.Trim(), c.Secret.Trim(), OAuthClientSource.Custom);
+            return new OAuthClient(c.Id!.Trim(), c.Secret.Trim(), OAuthClientSource.Custom);
 
         if (IsValidBuiltIn(builtInId, builtInSecret))
             return new OAuthClient(builtInId!.Trim(), builtInSecret!.Trim(), OAuthClientSource.BuiltIn);

@@ -410,7 +410,7 @@ public sealed class CloudSyncProvider : IOverlayStateStore
     private static SafeFileHandle? OpenFileHandle(string path)
     {
         var handle = CfApi.CreateFileW(
-            path,
+            SyncIt.Core.Helpers.PathHelper.ToExtendedPath(path), // long paths (> 260 chars)
             CfApi.FILE_WRITE_ATTRIBUTES,
             CfApi.FILE_SHARE_READ | CfApi.FILE_SHARE_WRITE | CfApi.FILE_SHARE_DELETE,
             IntPtr.Zero,
