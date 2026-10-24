@@ -1,6 +1,8 @@
 # Changelog
 
 ## 1.1.0 - 2026-10-24
+- **Windows 11 (Fluent) design:** new design system (`Theme.cs`). Segoe UI Variable, a role-based color palette, light/dark following the Windows app theme, the Windows accent color, dark title bars, rounded window corners and rounded buttons/cards. Restyled tray menu with roomy items, rounded hover highlight and its own checkmark. New app icon and DPI-aware multi-size tray status icons. Modern Inno Setup wizard with branded images. Mica isn't applied to window content, because WinForms can't draw a transparent client area.
+- Fixed content touching the left window edge (it looked clipped) in the Account, Preferences, Drive folder picker and Status windows, plus tray menu text drawn about 3px from the edge.
 - **One-click sign-in:** the setup screen now shows only a big **Sign in with Google** button, a plain-language note on what access SyncIt asks for and why, and help for Google's *unverified app* screen. It uses a built-in Desktop client injected at build time from `SYNCIT_GOOGLE_CLIENT_ID` and `SYNCIT_GOOGLE_CLIENT_SECRET` (GitHub secrets or env vars; never committed). Builds without it open the own-client setup.
 - **Optional own-client setup (technical users):** reached from a small Advanced link or a sign-in error. Numbered steps, each with an **Open this page** button that links to the right Google Cloud page; **Import client file** plus drag-and-drop for `client_secret_*.json` (Web and service-account files are rejected); manual paste.
 - Sign-in errors are now in plain language. User-cap, blocked and invalid-client errors offer the own-client option.

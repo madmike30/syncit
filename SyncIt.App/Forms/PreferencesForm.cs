@@ -265,4 +265,10 @@ public sealed class PreferencesForm : Form
         g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
         g.DrawPath(pen, path);
     }
+    // Fluent theme (see Theme.cs): remaps colors/fonts by role, dark mode, rounded window corners.
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        Theme.Apply(this);
+    }
 }
