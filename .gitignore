@@ -37,3 +37,4 @@ desktop.ini
 ## Editor / misc
 .vscode/
 *.log
+dist/

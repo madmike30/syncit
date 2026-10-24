@@ -333,9 +333,10 @@ public sealed class FirstRunForm : Form
             var clientId     = _clientIdBox.Text.Trim();
             var clientSecret = _clientSecretBox.Text.Trim();
 
-            if (string.IsNullOrEmpty(clientId) || string.IsNullOrEmpty(clientSecret))
+            var credError = OAuthClientValidator.ValidateClientId(clientId) ?? OAuthClientValidator.ValidateClientSecret(clientSecret);
+            if (credError is not null)
             {
-                SetStatus("Please paste both the Client ID and Client Secret from Google Cloud Console.", Color.FromArgb(215, 40, 40));
+                SetStatus(credError + " See docs/SETUP-GOOGLE-OAUTH.md.", Color.FromArgb(215, 40, 40));
                 return;
             }
 

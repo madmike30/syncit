@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.0 - 2026-10-24
+- MIT license.
+- Versioning from `Directory.Build.props` (1.0.0); version shown in tray **About** and logged at startup.
+- OAuth onboarding: Client ID/Secret format validation on the setup screen; new [docs/SETUP-GOOGLE-OAUTH.md](docs/SETUP-GOOGLE-OAUTH.md). Kept the full `drive` scope (`drive.file` would hide existing folders); documented why.
+- Support: tray **Open Logs Folder** and **Export Logs (zip)** with redaction of tokens, secrets and emails; global crash handler writes `crash-*.log`.
+- Packaging: Inno Setup per-user installer, portable zip, SHA256SUMS; single-file exe now compressed (262 MB to ~100 MB).
+- Release workflow on `v*` tags creates a **draft** GitHub Release; optional code signing via repo secrets (skipped if absent).
+- 18 new tests (128 total).
+
 ## 2026-10-24 - Security tidy
 - Removed third-party `.claude/commands` and a stale `.vscode` setting; deleted merged branch `claude/gracious-clarke`.
 - Fixed all build warnings (nullable Drive IDs, unused variable, Drive.v3 package version).

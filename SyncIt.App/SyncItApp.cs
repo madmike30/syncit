@@ -472,6 +472,10 @@ public sealed class SyncItApp : ApplicationContext
         _menu.Items.Add(_autoStartItem);
         _menu.Items.Add(new ToolStripSeparator());
 
+        _menu.Items.Add("Open Logs Folder",   null, (_, _) => OnOpenLogs());
+        _menu.Items.Add("Export Logs (zip)...", null, (_, _) => OnExportLogs());
+        _menu.Items.Add($"About SyncIt {AppInfo.Version}", null, (_, _) => OnAbout());
+        _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add("Quit SyncIt", null, OnExit);
 
         _notifyIcon = new NotifyIcon
@@ -668,6 +672,38 @@ public sealed class SyncItApp : ApplicationContext
     }
 
     private void OnSwitchAccount(object? sender, EventArgs e) => ShowAccountForm();
+
+    private static void OnOpenLogs()
+    {
+        Directory.CreateDirectory(AppInfo.LogDir);
+        Process.Start(new ProcessStartInfo("explorer.exe", $"\"{AppInfo.LogDir}\"") { UseShellExecute = true });
+    }
+
+    private void OnExportLogs()
+    {
+        using var dlg = new SaveFileDialog
+        {
+            Title    = "Export SyncIt logs",
+            Filter   = "Zip archive (*.zip)|*.zip",
+            FileName = $"syncit-logs-{DateTime.Now:yyyyMMdd-HHmm}.zip",
+        };
+        if (dlg.ShowDialog() != DialogResult.OK) return;
+        try
+        {
+            var n = LogExporter.Export(AppInfo.LogDir, dlg.FileName);
+            MessageBox.Show($"Exported {n} log file(s) to:\n{dlg.FileName}\n\nTokens, secrets and email addresses were redacted. File and folder names are still included; review before sharing.",
+                "SyncIt", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Log export failed.");
+            MessageBox.Show($"Could not export logs: {ex.Message}", "SyncIt", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private static void OnAbout() =>
+        MessageBox.Show($"SyncIt {AppInfo.Version}\nBidirectional Google Drive sync for Windows.\n\nMIT License - Copyright (c) 2026 SyncIt contributors\nhttps://github.com/madmike30/syncit",
+            "About SyncIt", MessageBoxButtons.OK, MessageBoxIcon.Information);
 
     private void ShowAccountForm()
     {

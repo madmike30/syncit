@@ -25,6 +25,7 @@ dotnet publish "%ROOT%SyncIt.App\SyncIt.App.csproj" ^
     -p:IncludeNativeLibrariesForSelfExtract=true ^
     -p:PublishReadyToRun=true ^
     -p:PublishTrimmed=false ^
+    -p:EnableCompressionInSingleFile=true ^
     -p:DebugType=None
 if errorlevel 1 goto :publish_failed
 if not exist "%OUT%\SyncIt.exe" (
