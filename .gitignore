@@ -22,3 +22,14 @@ publish/
 Thumbs.db
 .DS_Store
 desktop.ini
+
+## Local agent/tool artifacts
+.agents/
+.claude/worktrees/
+.claude/settings.local.json
+.codex_tmp/
+
+## Release binaries go to GitHub Releases, not git
+*.exe
+*.lnk
+.claude/settings.json
