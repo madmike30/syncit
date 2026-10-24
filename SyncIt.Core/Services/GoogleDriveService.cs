@@ -1,4 +1,4 @@
-using Google.Apis.Auth.OAuth2;
+﻿using Google.Apis.Auth.OAuth2;
 using Google.Apis.Drive.v3;
 using Google.Apis.Drive.v3.Data;
 using Google.Apis.Services;
@@ -88,13 +88,13 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
                 // Cache folder entries for fast path resolution
                 if (file.MimeType == "application/vnd.google-apps.folder")
                 {
-                    _folderCache.Set(file.Id, PathHelper.SanitizeRemoteSegment(file.Name ?? file.Id ?? "unnamed"), file.Parents?.FirstOrDefault());
+                    _folderCache.Set(file.Id!, PathHelper.SanitizeRemoteSegment(file.Name ?? file.Id ?? "unnamed"), file.Parents?.FirstOrDefault());
 
                     // Yield the folder itself so callers can create it locally
                     yield return file;
 
                     // Recurse into subfolder
-                    await foreach (var child in ListFilesAsync(file.Id, ct))
+                    await foreach (var child in ListFilesAsync(file.Id!, ct))
                         yield return child;
                 }
                 else
@@ -135,10 +135,10 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
 
                 if (file.MimeType == "application/vnd.google-apps.folder")
                 {
-                    _folderCache.Set(file.Id, PathHelper.SanitizeRemoteSegment(file.Name ?? file.Id ?? "unnamed"), file.Parents?.FirstOrDefault());
+                    _folderCache.Set(file.Id!, PathHelper.SanitizeRemoteSegment(file.Name ?? file.Id ?? "unnamed"), file.Parents?.FirstOrDefault());
                     yield return (file, relativePath);
 
-                    await foreach (var child in ListFilesWithPathsAsync(file.Id, relativePath, ct))
+                    await foreach (var child in ListFilesWithPathsAsync(file.Id!, relativePath, ct))
                         yield return child;
                 }
                 else
@@ -327,9 +327,9 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
                     if (change.File is not null && change.File.MimeType == "application/vnd.google-apps.folder")
                     {
                         if (change.Removed == true || change.File.Trashed == true)
-                            _folderCache.Remove(change.FileId);
+                            _folderCache.Remove(change.FileId!);
                         else
-                            _folderCache.Set(change.FileId, PathHelper.SanitizeRemoteSegment(change.File.Name ?? change.FileId ?? "unnamed"), change.File.Parents?.FirstOrDefault());
+                            _folderCache.Set(change.FileId!, PathHelper.SanitizeRemoteSegment(change.File.Name ?? change.FileId ?? "unnamed"), change.File.Parents?.FirstOrDefault());
                     }
                 }
             }
@@ -501,10 +501,10 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
             {
                 var relativePath = PathHelper.CombineRemoteRelativePath(parentPath, folder.Name ?? folder.Id ?? "unnamed");
 
-                result.Add(new DriveSubfolderInfo(folder.Name, relativePath, folder.Id));
+                result.Add(new DriveSubfolderInfo(folder.Name ?? folder.Id ?? "unnamed", relativePath, folder.Id ?? string.Empty));
 
                 // Recurse into subfolder
-                var children = await ListSubfoldersAsync(folder.Id, relativePath, maxDepth - 1, ct);
+                var children = await ListSubfoldersAsync(folder.Id!, relativePath, maxDepth - 1, ct);
                 result.AddRange(children);
             }
         }

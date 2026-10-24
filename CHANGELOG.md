@@ -1,4 +1,10 @@
-﻿# Changelog
+# Changelog
+
+## 2026-10-24 - Security tidy
+- Removed third-party `.claude/commands` and a stale `.vscode` setting; deleted merged branch `claude/gracious-clarke`.
+- Fixed all build warnings (nullable Drive IDs, unused variable, Drive.v3 package version).
+- Added SECURITY.md and a GitHub Actions CI workflow (build + test on windows-latest).
+- Verified: 0 warnings, 110/110 tests, gitleaks clean.
 
 ## 2026-10-24 - MVP cleanup
 - Merged the unpushed local fix (sync recovery edge cases) with origin/main (PR #1: overlay icons, thread safety, deletion pipeline). Resolved the `BuildStatus` conflict: kept the engine-list lock and the aggregated per-pair status.

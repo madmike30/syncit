@@ -33,3 +33,7 @@ desktop.ini
 *.exe
 *.lnk
 .claude/settings.json
+
+## Editor / misc
+.vscode/
+*.log
