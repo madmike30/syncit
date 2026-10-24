@@ -11,6 +11,7 @@ A lightweight, bidirectional Google Drive sync tool for Windows. Keep a local fo
 - **Explorer integration** — sync status icons (✓ synced / ↻ syncing) in Windows Explorer via the Cloud Files API
 - **Selective sync** — choose specific Drive subfolders; filter files with glob-based include/exclude patterns
 - **Google Docs export** — auto-convert Docs → .docx, Sheets → .xlsx, Slides → .pptx, Drawings → .svg
+- **Support tools** — tray menu: About (version), Open Logs Folder, Export Logs (zip with tokens/secrets/emails redacted); crash reports written to the logs folder
 - **System tray UI** — icon states, account info, storage bar, recent activity, and detailed status window
 - **Secure credentials** — OAuth2 tokens encrypted with DPAPI; client secrets stored in Windows Credential Manager
 
@@ -35,9 +36,9 @@ Limits to know (honest comparison):
 
 ## Install
 
-1. Download `SyncIt.exe` from the [Releases](https://github.com/madmike30/syncit/releases) page (or build it with `publish.bat`).
+1. Download `SyncIt-<version>-setup.exe` (installer, no admin needed) or the portable zip from [Releases](https://github.com/madmike30/syncit/releases), or build it with `publish.bat`.
 2. Put it anywhere and double-click it. No .NET install needed.
-3. On first run, paste your OAuth Client ID/Secret, sign in with Google, and pick the local and Drive folders.
+3. On first run, paste your OAuth Client ID/Secret (one-time setup: [docs/SETUP-GOOGLE-OAUTH.md](docs/SETUP-GOOGLE-OAUTH.md)), sign in with Google, and pick the local and Drive folders.
 ## Requirements
 
 - Windows 10 or 11
@@ -55,7 +56,7 @@ dotnet run --project SyncIt.App
 ### Release build
 
 ```bash
-publish.bat          # creates the standalone ./publish/SyncIt.exe
+publish.bat          # creates the standalone ./publish/SyncIt.exe (~100 MB, compressed)
 ```
 
 ### First run
@@ -72,7 +73,7 @@ publish.bat          # creates the standalone ./publish/SyncIt.exe
 SyncIt.sln
 ├── SyncIt.Core/        Core library — models, services, safety
 ├── SyncIt.App/         Unified single-process app (sync engine + tray icon)
-└── SyncIt.Tests/       xUnit test suite (110 tests)
+└── SyncIt.Tests/       xUnit test suite (128 tests)
 ```
 
 Single-process architecture like OneDrive / Google Drive: sync engines run on background threads, tray icon on the WinForms UI thread. No child processes, no IPC.
@@ -97,6 +98,8 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full config reference
 - [User Guide](docs/USER-GUIDE.md) — quickstart, menu walkthrough, troubleshooting
 - [Configuration](docs/CONFIGURATION.md) — complete settings reference
 - [Test Plan](docs/TEST-PLAN.md) — QA test matrix
+- [Google OAuth setup](docs/SETUP-GOOGLE-OAUTH.md) — create your own client in 5 minutes
+- [Releasing](docs/RELEASING.md) — tags, draft releases, signing options
 - [Security](SECURITY.md) — credential storage and reporting issues
 
 ## Tech stack
@@ -110,4 +113,4 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full config reference
 
 ## License
 
-No license has been chosen yet, so all rights are reserved for now. An open-source license will be added before the repository goes public.
+[MIT](LICENSE) - Copyright (c) 2026 SyncIt contributors

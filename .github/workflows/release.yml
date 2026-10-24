@@ -1,0 +1,53 @@
+﻿name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Version from tag
+        shell: pwsh
+        run: echo "VERSION=$('${{ github.ref_name }}'.TrimStart('v'))" >> $env:GITHUB_ENV
+      - name: Test
+        run: dotnet test SyncIt.sln -c Release
+      - name: Publish single-file exe
+        run: >
+          dotnet publish SyncIt.App/SyncIt.App.csproj -c Release -r win-x64 -o publish
+          --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:PublishReadyToRun=true -p:EnableCompressionInSingleFile=true -p:DebugType=None
+          -p:Version=${{ env.VERSION }}
+      - name: Sign exe (skipped if no secret)
+        env:
+          SIGN_CERT_PFX_BASE64: ${{ secrets.SIGN_CERT_PFX_BASE64 }}
+          SIGN_CERT_PASSWORD: ${{ secrets.SIGN_CERT_PASSWORD }}
+        shell: pwsh
+        run: ./installer/sign.ps1 publish/SyncIt.exe
+      - name: Build installer
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=$env:VERSION /DSourceExe=..\publish\SyncIt.exe installer\SyncIt.iss
+      - name: Sign installer (skipped if no secret)
+        env:
+          SIGN_CERT_PFX_BASE64: ${{ secrets.SIGN_CERT_PFX_BASE64 }}
+          SIGN_CERT_PASSWORD: ${{ secrets.SIGN_CERT_PASSWORD }}
+        shell: pwsh
+        run: ./installer/sign.ps1 "dist/SyncIt-$env:VERSION-setup.exe"
+      - name: Portable zip + checksums
+        shell: pwsh
+        run: |
+          Copy-Item LICENSE publish/LICENSE.txt
+          Compress-Archive publish/* "dist/SyncIt-$env:VERSION-portable-win-x64.zip"
+          Get-ChildItem dist | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } | Set-Content dist/SHA256SUMS.txt
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: gh release create "${{ github.ref_name }}" dist/* --draft --title "SyncIt $env:VERSION" --generate-notes

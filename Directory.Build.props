@@ -1,0 +1,9 @@
+﻿<Project>
+  <PropertyGroup>
+    <!-- Single source of truth for the app version. CI overrides with -p:Version=<tag>. -->
+    <Version>1.0.0</Version>
+    <Authors>SyncIt contributors</Authors>
+    <Product>SyncIt</Product>
+    <Copyright>Copyright (c) 2026 SyncIt contributors</Copyright>
+  </PropertyGroup>
+</Project>

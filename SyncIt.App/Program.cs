@@ -39,6 +39,25 @@ Log.Logger = new LoggerConfiguration()
         outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] [TID:{ThreadId}] {SourceContext}: {Message:lj}{NewLine}{Exception}"))
     .CreateLogger();
 
+// ─── Crash handlers ──────────────────────────────────────────────────────────────
+void ReportCrash(Exception ex, string source)
+{
+    try
+    {
+        Log.Fatal(ex, "Unhandled exception ({Source}).", source);
+        var path = LogExporter.WriteCrashLog(logDir, ex, SyncIt.App.AppInfo.Version);
+        MessageBox.Show($"SyncIt hit an unexpected error and wrote a crash report:\n{path}\n\nUse tray menu > Export Logs to share it.",
+            "SyncIt Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+    }
+    catch { /* never throw from the crash handler */ }
+}
+Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+Application.ThreadException += (_, e) => ReportCrash(e.Exception, "UI thread");
+AppDomain.CurrentDomain.UnhandledException += (_, e) => { if (e.ExceptionObject is Exception ex) ReportCrash(ex, "AppDomain"); };
+TaskScheduler.UnobservedTaskException += (_, e) => { Log.Error(e.Exception, "Unobserved task exception."); e.SetObserved(); };
+
+Log.Information("SyncIt {Version} starting.", SyncIt.App.AppInfo.Version);
+
 try
 {
     using var loggerFactory = LoggerFactory.Create(b => b.AddSerilog(dispose: false));
@@ -54,9 +73,7 @@ try
 }
 catch (Exception ex)
 {
-    Log.Fatal(ex, "SyncIt crashed.");
-    MessageBox.Show($"SyncIt crashed:\n{ex.Message}", "SyncIt Error",
-        MessageBoxButtons.OK, MessageBoxIcon.Error);
+    ReportCrash(ex, "main");
 }
 finally
 {
