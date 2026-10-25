@@ -7,6 +7,7 @@
 - **1.2.0** — sync engine hardening (duplicates, lookup-before-create, settle/temp files, renames, long paths, token expiry, Unicode, rate limits).
 
 ## Next (P2)
+- **Process exit after Quit can take ~40 s on the installed app** — the app finishes its own shutdown, but Windows holds the process while the Cloud Files (Explorer status) connection tears down. Investigate unregistering/closing placeholder handles before exit.
 - **Explorer status icons for every folder** — today the overlay covers the first enabled folder.
 - **Google verification of the built-in sign-in** — removes the "unverified app" screen and the user cap.
 - **Encrypted folders out of beta** — external review, Argon2id key format, two-way mode.
