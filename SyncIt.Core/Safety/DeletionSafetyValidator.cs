@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 using SyncIt.Core.Models;
 using SyncIt.Core.Services;
 
@@ -56,6 +56,8 @@ public sealed class DeletionSafetyValidator
             var baseline = await _store.GetRecordAsync(pair.Id, del.Side, del.RelativePath);
             if (baseline is not null && !baseline.IsDeleted)
                 withBaseline.Add(del);
+            else if (del.TriggerReason == "FolderDeletedLocally" && del.Side == SyncSide.Remote && !string.IsNullOrEmpty(del.DriveFileId))
+                withBaseline.Add(del); // folders have no baseline row; the engine verified every file inside was synced
             else
             {
                 _logger.LogWarning(

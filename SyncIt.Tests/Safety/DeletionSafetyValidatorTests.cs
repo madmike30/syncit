@@ -1,4 +1,4 @@
-using FluentAssertions;
+﻿using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using SyncIt.Core.Models;
 using SyncIt.Core.Safety;
@@ -31,6 +31,16 @@ public sealed class DeletionSafetyValidatorTests : IAsyncLifetime
         _store.Dispose();
         _journal.Dispose();
         return Task.CompletedTask;
+    }
+
+    [Fact]
+    public async Task ValidateAsync_LocalFolderDelete_WithoutBaseline_IsApproved_OthersStillRejected()
+    {
+        var folder = new DeletionRecord { SyncPairId = _pair.Id, RelativePath = "Old", Side = SyncSide.Remote, DriveFileId = "fold", TriggerReason = "FolderDeletedLocally" };
+        var phantom = new DeletionRecord { SyncPairId = _pair.Id, RelativePath = "ghost.txt", Side = SyncSide.Remote, DriveFileId = "g", TriggerReason = "DeletedLocally" };
+        var noId = new DeletionRecord { SyncPairId = _pair.Id, RelativePath = "Old2", Side = SyncSide.Remote, TriggerReason = "FolderDeletedLocally" };
+        var result = await _validator.ValidateAsync(_pair, new[] { folder, phantom, noId });
+        result.ApprovedDeletions.Select(d => d.RelativePath).Should().Equal("Old");
     }
 
     [Fact]
