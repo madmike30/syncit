@@ -133,8 +133,8 @@ public static class DriveLinks
         var id = pair.RemoteFolderId;
         foreach (var seg in rel.Split('/', StringSplitOptions.RemoveEmptyEntries))
         {
-            var f = await drive.FindFileAsync(id, seg, ct);
-            if (f?.Id is null || f.MimeType != "application/vnd.google-apps.folder") return null;
+            var f = await drive.FindFolderAsync(id, seg, ct);
+            if (f?.Id is null) return null;
             id = f.Id;
         }
         return For(id, "application/vnd.google-apps.folder");

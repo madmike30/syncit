@@ -484,6 +484,19 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
             ?? result.Files?.FirstOrDefault();
     }
 
+    public async Task<DriveFile?> FindFolderAsync(string parentFolderId, string name, CancellationToken ct = default)
+    {
+        var request = _drive.Files.List();
+        DriveRequestScope.Apply(request, SharedDriveId);
+        request.Q = $"'{parentFolderId}' in parents and name = '{EscapeDriveQuery(name)}' and trashed = false " +
+                    "and mimeType = 'application/vnd.google-apps.folder'";
+        request.Fields = $"files({FileFields})";
+        request.PageSize = 10;
+        var result = await _retryPolicy.ExecuteAsync(() => request.ExecuteAsync(ct));
+        return result.Files?.FirstOrDefault(f => string.Equals(f.Name, name, StringComparison.Ordinal))
+            ?? result.Files?.FirstOrDefault();
+    }
+
     public async Task<DriveFile> MoveFileAsync(string fileId, string newName, string newParentId, CancellationToken ct = default)
     {
         var current = await GetFileAsync(fileId, ct) ?? throw new FileNotFoundException($"Drive file {fileId} not found.");

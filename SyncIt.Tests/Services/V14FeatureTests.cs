@@ -303,7 +303,7 @@ public sealed class V14FeatureTests
     {
         using var temp = new TempDirectory();
         var h = await Engine(temp.Path);
-        h.Drive.Setup(d => d.FindFileAsync(h.Pair.RemoteFolderId, "SyncIt-Test", It.IsAny<CancellationToken>()))
+        h.Drive.Setup(d => d.FindFolderAsync(h.Pair.RemoteFolderId, "SyncIt-Test", It.IsAny<CancellationToken>()))
             .ReturnsAsync(new DriveFile { Id = "fold", Name = "SyncIt-Test", MimeType = "application/vnd.google-apps.folder" });
         h.Drive.Setup(d => d.ListFilesWithPathsAsync("fold", "", It.IsAny<CancellationToken>()))
             .Returns(() => Items((new DriveFile { Id = "s", MimeType = "application/vnd.google-apps.folder" }, "sub")));
@@ -318,7 +318,7 @@ public sealed class V14FeatureTests
     {
         using var temp = new TempDirectory();
         var h = await Engine(temp.Path);
-        h.Drive.Setup(d => d.FindFileAsync(h.Pair.RemoteFolderId, "Shared", It.IsAny<CancellationToken>()))
+        h.Drive.Setup(d => d.FindFolderAsync(h.Pair.RemoteFolderId, "Shared", It.IsAny<CancellationToken>()))
             .ReturnsAsync(new DriveFile { Id = "fold", Name = "Shared", MimeType = "application/vnd.google-apps.folder" });
         h.Drive.Setup(d => d.ListFilesWithPathsAsync("fold", "", It.IsAny<CancellationToken>()))
             .Returns(() => Items((new DriveFile { Id = "u", Name = "unknown.pdf", MimeType = "application/pdf" }, "unknown.pdf")));
@@ -333,7 +333,7 @@ public sealed class V14FeatureTests
         Directory.CreateDirectory(Path.Combine(temp.Path, "Here"));
         var h = await Engine(temp.Path);
         await Invoke(h.Engine, "HandleLocalDeleteAsync", new ChangeEvent { SyncPairId = h.Pair.Id, Kind = ChangeKind.Deleted, RelativePath = "Here" }, h.Pair, CancellationToken.None);
-        h.Drive.Verify(d => d.FindFileAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        h.Drive.Verify(d => d.FindFolderAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

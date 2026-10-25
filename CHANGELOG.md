@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased
+- Fixed: deleting a folder on the PC did not trash the matching Drive folder in the live app (folder lookup skipped Google folder types). Same fix for Explorer "Copy Drive link" on folders. Found in a live two-account test.
+
 ## 1.4.0 - 2026-10-25
 ### Fixes
 - **Recovers by itself after a network outage.** A Drive request that hung after the connection dropped could block the sync loop forever, so the app looked disconnected until restarted. Every metadata request attempt is now capped (90 s) and retried, the poll loop can no longer stop on an error, and failed cycles back off (poll interval doubling, up to 5 min).

@@ -115,6 +115,9 @@ public interface IGoogleDriveService
     Task<DriveFile?> FindFileAsync(string parentFolderId, string name, CancellationToken ct = default);
 
     /// <summary>Rename and/or move a Drive item in place (keeps its ID, history and sharing).</summary>
+    /// <summary>A (non-trashed) folder named <paramref name="name"/> directly inside the parent, or null.</summary>
+    Task<DriveFile?> FindFolderAsync(string parentFolderId, string name, CancellationToken ct = default);
+
     Task<DriveFile> MoveFileAsync(string fileId, string newName, string newParentId, CancellationToken ct = default);
 
     // ── 1.4: version history, Drive trash ─────────────────────────────────

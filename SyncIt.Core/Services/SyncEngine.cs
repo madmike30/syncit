@@ -1248,8 +1248,9 @@ public sealed class SyncEngine : ISyncEngine
         DriveFileLite? folder = null;
         foreach (var seg in relativePath.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries))
         {
-            var f = await _driveService.FindFileAsync(folderId, seg, ct);
-            if (f?.Id is null || f.MimeType != "application/vnd.google-apps.folder") { folder = null; break; }
+            // FindFileAsync skips Google types (folders included), so look folders up explicitly.
+            var f = await _driveService.FindFolderAsync(folderId, seg, ct);
+            if (f?.Id is null) { folder = null; break; }
             folder = new DriveFileLite(f.Id);
             folderId = f.Id;
         }
