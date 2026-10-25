@@ -6,6 +6,7 @@
 - **1.2.0** — sync engine hardening (duplicates, lookup-before-create, settle/temp files, renames, long paths, token expiry, Unicode, rate limits).
 
 ## Next (P2)
+- **Reliable settings hot-reload** — external edits to `syncit.json` are sometimes applied minutes late or missed until the file is written again or the app restarts. Also, closing the app (WM_CLOSE) does not exit it cleanly.
 - **Explorer status icons for every folder** — today the overlay covers the first enabled folder.
 - **Google verification of the built-in sign-in** — removes the "unverified app" screen and the user cap.
 - **Encrypted folders out of beta** — external review, Argon2id key format, two-way mode.
