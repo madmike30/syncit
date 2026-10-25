@@ -27,6 +27,7 @@ public sealed class CloudSyncProvider : IOverlayStateStore
     private readonly string _displayName;
     private readonly ILogger _logger;
     private bool _registered;
+    private readonly CancellationTokenSource _markCts = new();
     private long _connectionKey;
 
     // Tracks how many non-synced files exist under each directory.
@@ -57,7 +58,14 @@ public sealed class CloudSyncProvider : IOverlayStateStore
             _registered = true;
             _logger.LogInformation("Cloud sync root registered and connected: {Path}", _syncRootPath);
 
-            MarkItems(isSyncedFilter);
+            // Marking every item (thousands of files) takes a while; don't hold up sync engines or the UI.
+            var token = _markCts.Token;
+            _ = Task.Run(() =>
+            {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                MarkItems(isSyncedFilter, token);
+                _logger.LogInformation("Overlay pass finished in {Ms} ms.", sw.ElapsedMilliseconds);
+            }, token);
         }
         catch (Exception ex)
         {
@@ -70,13 +78,14 @@ public sealed class CloudSyncProvider : IOverlayStateStore
     /// Synced items (passing filter) get green checkmarks (in-sync + pinned).
     /// Non-synced items get in-sync only (no icon) to suppress the sync-arrows.
     /// </summary>
-    private void MarkItems(Func<string, bool>? isSyncedFilter)
+    private void MarkItems(Func<string, bool>? isSyncedFilter, CancellationToken ct = default)
     {
         int synced = 0, suppressed = 0, failed = 0;
         try
         {
             foreach (var dir in Directory.EnumerateDirectories(_syncRootPath, "*", SearchOption.AllDirectories))
             {
+                if (ct.IsCancellationRequested) return;
                 try
                 {
                     var relativePath = Path.GetRelativePath(_syncRootPath, dir).Replace('\\', '/');
@@ -95,6 +104,7 @@ public sealed class CloudSyncProvider : IOverlayStateStore
 
             foreach (var file in Directory.EnumerateFiles(_syncRootPath, "*", SearchOption.AllDirectories))
             {
+                if (ct.IsCancellationRequested) return;
                 try
                 {
                     var relativePath = Path.GetRelativePath(_syncRootPath, file).Replace('\\', '/');
@@ -197,6 +207,7 @@ public sealed class CloudSyncProvider : IOverlayStateStore
 
     public void Dispose()
     {
+        try { _markCts.Cancel(); } catch (ObjectDisposedException) { }
         if (!_registered) return;
         try
         {

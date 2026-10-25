@@ -772,8 +772,10 @@ public sealed class SyncEngine : ISyncEngine
         await Parallel.ForEachAsync(toDownload, new ParallelOptions { MaxDegreeOfParallelism = maxConcurrency, CancellationToken = ct },
             async (item, token) => await DownloadRemoteFileAsync(item.Value, item.Key, pair, token));
 
-        // Batch-set all synced files and folders to Synced overlay state
+        // Batch-set all synced files and folders to Synced overlay state (background: thousands of files
+        // must not delay "engine started")
         if (_overlayStore is not null)
+            _ = Task.Run(async () =>
         {
             try
             {
@@ -793,11 +795,13 @@ public sealed class SyncEngine : ISyncEngine
                 if (overlayItems.Count > 0)
                     await _overlayStore.SetBatchAsync(overlayItems, ct);
             }
+            catch (OperationCanceledException) { }
+            catch (ObjectDisposedException) { }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to set initial overlay state for pair {Id}", pair.Id);
             }
-        }
+        }, ct);
 
         _logger.LogInformation("Initial sync complete for pair '{Id}'.", pair.Id);
     }

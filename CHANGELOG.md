@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.3 - 2026-10-25
+- Fixed: settings edits made outside the app were sometimes applied minutes late or missed (including edits made while the app was starting). The watcher now debounces, retries while the file is locked, handles atomic replace, ignores touches that change nothing (content hash), and re-checks every 30 s.
+- Fixed: a normal close request (installer, logoff, `taskkill` without /F) was ignored, and quitting could hang. Engines now stop off the UI thread within 4 s, and the app always exits within about 6 s.
+- Faster startup: the Explorer status-icon pass over every file now runs in the background, so sync engines start without waiting for it.
+
 ## 1.4.2 - 2026-10-25
 - Fixed: a folder deleted on the PC was still refused by the deletion safety check (folders have no baseline row), so the Drive folder stayed. Folder deletes are now approved once the engine has verified every file inside was synced; other untracked deletions are still rejected. Found in the live test of 1.4.1.
 

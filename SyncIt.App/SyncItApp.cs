@@ -104,6 +104,7 @@ public sealed partial class SyncItApp : ApplicationContext
         Theme.Initialize(_traySettings.Theme);
 
         InitializeNotifyIcon();
+        _closeListener = new CloseListener(() => OnExit(this, EventArgs.Empty));
 
         // Start sync engine on a background thread
         _ = Task.Run(StartSyncEngineAsync);
@@ -230,11 +231,13 @@ public sealed partial class SyncItApp : ApplicationContext
                 _logger.LogDebug(ex, "Failed to fetch initial account info.");
             }
 
+            // Config hot-reload: created before the engines start so its content baseline is the config
+            // that was loaded; edits made while engines start are applied as soon as it is started below.
+            _configWatcher = new ConfigWatcher(ConfigPath, _config, CreateLogger<ConfigWatcher>());
+
             // Start engines
             await StartEnginesAsync(driveService, globFilter, atomicWriter, ct);
 
-            // Config hot-reload
-            _configWatcher = new ConfigWatcher(ConfigPath, _config, CreateLogger<ConfigWatcher>());
             _configWatcher.ConfigReloaded += newConfig =>
             {
                 // Account switch / disconnect restart engines themselves; a second restart from the
@@ -1562,19 +1565,62 @@ public sealed partial class SyncItApp : ApplicationContext
         foreach (var e in waking) e.WakeUp();
     }
 
+    private int _exiting;
+    internal static readonly TimeSpan GracefulStopTimeout = TimeSpan.FromSeconds(4);
+    internal static readonly TimeSpan HardExitTimeout = TimeSpan.FromSeconds(6);
+
     private async void OnExit(object? sender, EventArgs e)
     {
-        UnhookConnectivityEvents();
-        _dashboard?.Close();
+        if (Interlocked.Exchange(ref _exiting, 1) == 1) return;
+        var sw = Stopwatch.StartNew();
+        _logger.LogInformation("Shutting down...");
+
+        // Safety net: never hang around after the user asked us to quit.
+        _ = Task.Delay(HardExitTimeout).ContinueWith(_ =>
+        {
+            _logger.LogWarning("Shutdown did not finish within {Sec} s; forcing exit.", HardExitTimeout.TotalSeconds);
+            Serilog.Log.CloseAndFlush();
+            Environment.Exit(0);
+        }, TaskScheduler.Default);
+
+        try { UnhookConnectivityEvents(); } catch { }
+        try { _dashboard?.Close(); } catch { }
         _notifyIcon.Visible = false;
+        _configWatcher?.Dispose();
         _engineCts.Cancel();
 
-        // Wait for engines to shut down gracefully (flush DB, release file handles)
-        try { await StopEnginesAsync(); }
+        // Stop engines off the UI thread, bounded (flush DB, release file handles).
+        try { await Task.Run(StopEnginesAsync).WaitAsync(GracefulStopTimeout); }
+        catch (TimeoutException) { _logger.LogWarning("Engines did not stop within {Sec} s; exiting anyway.", GracefulStopTimeout.TotalSeconds); }
         catch (Exception ex) { _logger.LogWarning(ex, "Error during graceful shutdown."); }
 
+        try { _overlayStore?.Dispose(); } catch { }
+        _closeListener?.DestroyHandle();
+        _logger.LogInformation("Shutdown complete in {Ms} ms.", sw.ElapsedMilliseconds);
         Application.Exit();
     }
+
+    /// <summary>
+    /// Hidden top-level window so a normal close request (taskkill without /F, installers, logoff)
+    /// runs the same quit path as the tray menu instead of being ignored.
+    /// </summary>
+    private sealed class CloseListener : NativeWindow
+    {
+        private const int WM_CLOSE = 0x0010, WM_QUERYENDSESSION = 0x0011, WM_ENDSESSION = 0x0016;
+        private readonly Action _onClose;
+        public CloseListener(Action onClose)
+        {
+            _onClose = onClose;
+            CreateHandle(new CreateParams { Caption = "SyncIt" });
+        }
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_CLOSE || (m.Msg == WM_ENDSESSION && m.WParam != IntPtr.Zero)) { _onClose(); return; }
+            if (m.Msg == WM_QUERYENDSESSION) { m.Result = (IntPtr)1; return; }
+            base.WndProc(ref m);
+        }
+    }
+    private CloseListener? _closeListener;
 
     // =========================================================================
     // Deletion freeze (engine event → UI)

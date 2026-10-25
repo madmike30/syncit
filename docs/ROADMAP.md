@@ -1,12 +1,12 @@
 # SyncIt roadmap
 
 ## Done
+- **1.4.3** — reliable settings hot-reload, quick exit on close, Explorer status-icon pass in the background (faster startup).
 - **1.4.0** — offline recovery + "Offline - retrying", account colour/badge on every folder and activity row, easy Add account, pause per folder/account, active hours, conflict/deletion notifications, backup-only folders, folder deletes reach Drive, selective config reload, map a pair to any My Drive folder, version history & restore (incl. Drive trash), first-sync preview, per-folder Docs export format, USB/external-disk folders, Explorer Copy Drive link / Open in Drive, duplicate finder, encrypted backup folders (Experimental).
 - **1.3.0** — multiple Google accounts at once (per-account sign-in and Disconnect), shared drives, auto-update with SHA-256 verification, Settings window.
 - **1.2.0** — sync engine hardening (duplicates, lookup-before-create, settle/temp files, renames, long paths, token expiry, Unicode, rate limits).
 
 ## Next (P2)
-- **Reliable settings hot-reload** — external edits to `syncit.json` are sometimes applied minutes late or missed until the file is written again or the app restarts. Also, closing the app (WM_CLOSE) does not exit it cleanly.
 - **Explorer status icons for every folder** — today the overlay covers the first enabled folder.
 - **Google verification of the built-in sign-in** — removes the "unverified app" screen and the user cap.
 - **Encrypted folders out of beta** — external review, Argon2id key format, two-way mode.
