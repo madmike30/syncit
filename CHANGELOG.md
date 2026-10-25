@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.4.4 - 2026-10-25
+- Fixed: in 1.4.3 a normal close request could still hang (a blocking step ran on the UI thread and the fallback timer depended on the thread pool). Shutdown work now runs off the UI thread, and a dedicated thread force-exits after 6 s. Found when verifying 1.4.3 on a real PC.
+
 ## 1.4.3 - 2026-10-25
 - Fixed: settings edits made outside the app were sometimes applied minutes late or missed (including edits made while the app was starting). The watcher now debounces, retries while the file is locked, handles atomic replace, ignores touches that change nothing (content hash), and re-checks every 30 s.
 - Fixed: a normal close request (installer, logoff, `taskkill` without /F) was ignored, and quitting could hang. Engines now stop off the UI thread within 4 s, and the app always exits within about 6 s.

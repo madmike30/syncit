@@ -1,7 +1,7 @@
 <Project>
   <PropertyGroup>
     <!-- Single source of truth for the app version. CI overrides with -p:Version=<tag>. -->
-    <Version>1.4.3</Version>
+    <Version>1.4.4</Version>
     <Authors>SyncIt contributors</Authors>
     <Product>SyncIt</Product>
     <Copyright>Copyright (c) 2026 SyncIt contributors</Copyright>

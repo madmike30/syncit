@@ -1576,25 +1576,35 @@ public sealed partial class SyncItApp : ApplicationContext
         _logger.LogInformation("Shutting down...");
 
         // Safety net: never hang around after the user asked us to quit.
-        _ = Task.Delay(HardExitTimeout).ContinueWith(_ =>
+        // Dedicated thread (not the thread pool, not the UI thread) so it fires even if both are stuck.
+        new Thread(() =>
         {
-            _logger.LogWarning("Shutdown did not finish within {Sec} s; forcing exit.", HardExitTimeout.TotalSeconds);
-            Serilog.Log.CloseAndFlush();
-            Environment.Exit(0);
-        }, TaskScheduler.Default);
+            Thread.Sleep(HardExitTimeout);
+            try { _logger.LogWarning("Shutdown did not finish within {Sec} s; forcing exit.", HardExitTimeout.TotalSeconds); } catch { }
+            var flush = new Thread(() => { try { Serilog.Log.CloseAndFlush(); } catch { } }) { IsBackground = true };
+            flush.Start();
+            flush.Join(1000);
+            Process.GetCurrentProcess().Kill();
+        }) { IsBackground = true, Name = "SyncIt hard exit" }.Start();
 
         try { UnhookConnectivityEvents(); } catch { }
         try { _dashboard?.Close(); } catch { }
         _notifyIcon.Visible = false;
-        _configWatcher?.Dispose();
-        _engineCts.Cancel();
 
-        // Stop engines off the UI thread, bounded (flush DB, release file handles).
-        try { await Task.Run(StopEnginesAsync).WaitAsync(GracefulStopTimeout); }
+        // Everything that can block (cancellation callbacks, watchers, engines) runs off the UI thread, bounded.
+        try
+        {
+            await Task.Run(async () =>
+            {
+                _configWatcher?.Dispose();
+                _engineCts.Cancel();
+                await StopEnginesAsync();
+            }).WaitAsync(GracefulStopTimeout);
+        }
         catch (TimeoutException) { _logger.LogWarning("Engines did not stop within {Sec} s; exiting anyway.", GracefulStopTimeout.TotalSeconds); }
         catch (Exception ex) { _logger.LogWarning(ex, "Error during graceful shutdown."); }
 
-        try { _overlayStore?.Dispose(); } catch { }
+        _ = Task.Run(() => { try { _overlayStore?.Dispose(); } catch { } }).Wait(1000);
         _closeListener?.DestroyHandle();
         _logger.LogInformation("Shutdown complete in {Ms} ms.", sw.ElapsedMilliseconds);
         Application.Exit();
