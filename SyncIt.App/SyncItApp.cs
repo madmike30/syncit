@@ -1580,14 +1580,23 @@ public sealed partial class SyncItApp : ApplicationContext
         new Thread(() =>
         {
             Thread.Sleep(HardExitTimeout);
-            try { _logger.LogWarning("Shutdown did not finish within {Sec} s; forcing exit.", HardExitTimeout.TotalSeconds); } catch { }
-            var flush = new Thread(() => { try { Serilog.Log.CloseAndFlush(); } catch { } }) { IsBackground = true };
-            flush.Start();
-            flush.Join(1000);
+            // Logging itself may be what is stuck, so it gets one second and never delays the exit.
+            var log = new Thread(() =>
+            {
+                try
+                {
+                    _logger.LogWarning("Shutdown did not finish within {Sec} s; forcing exit.", HardExitTimeout.TotalSeconds);
+                    Serilog.Log.CloseAndFlush();
+                }
+                catch { }
+            }) { IsBackground = true };
+            log.Start();
+            log.Join(1000);
             Process.GetCurrentProcess().Kill();
         }) { IsBackground = true, Name = "SyncIt hard exit" }.Start();
 
-        try { UnhookConnectivityEvents(); } catch { }
+        // SystemEvents unhooking can block on the SystemEvents thread, so it runs in the background.
+        _ = Task.Run(() => { try { UnhookConnectivityEvents(); } catch { } });
         try { _dashboard?.Close(); } catch { }
         _notifyIcon.Visible = false;
 

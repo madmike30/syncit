@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.4.5 - 2026-10-25
+- Fixed: the installed 1.4.4 could still hang on a normal close. Unhooking Windows power/network events now runs in the background (it can block on the system-events thread), and the forced-exit fallback no longer waits on logging.
+
 ## 1.4.4 - 2026-10-25
 - Fixed: in 1.4.3 a normal close request could still hang (a blocking step ran on the UI thread and the fallback timer depended on the thread pool). Shutdown work now runs off the UI thread, and a dedicated thread force-exits after 6 s. Found when verifying 1.4.3 on a real PC.
 
