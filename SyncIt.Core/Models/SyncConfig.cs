@@ -67,4 +67,19 @@ public class SyncConfig
 
     /// <summary>Check GitHub Releases for new versions (1.3+). Users can turn this off in Settings.</summary>
     public bool CheckForUpdates { get; set; } = true;
+
+    /// <summary>Only sync during active hours (1.4+). Outside them sync is paused.</summary>
+    public bool ActiveHoursEnabled { get; set; }
+
+    /// <summary>Active hours start (local hour 0-23, inclusive).</summary>
+    public int ActiveHoursStart { get; set; } = 8;
+
+    /// <summary>Active hours end (local hour 0-23, exclusive). End before start wraps past midnight.</summary>
+    public int ActiveHoursEnd { get; set; } = 23;
+
+    /// <summary>Windows notification when a conflict is resolved (1.4+).</summary>
+    public bool NotifyConflicts { get; set; } = true;
+
+    /// <summary>Windows notification when files are deleted or mass-deletion protection triggers (1.4+).</summary>
+    public bool NotifyDeletions { get; set; } = true;
 }

@@ -1,4 +1,4 @@
-﻿using Google.Apis.Auth.OAuth2;
+using Google.Apis.Auth.OAuth2;
 using Google.Apis.Drive.v3;
 using Google.Apis.Drive.v3.Data;
 using Google.Apis.Services;
@@ -28,6 +28,9 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
     private readonly AsyncKeyedLocker _folderEnsureLocks = new(StringComparer.OrdinalIgnoreCase);
     private string? _resolvedRootId;
 
+    /// <summary>Upper bound for one metadata request attempt (list/get/changes). Uploads/downloads are not capped.</summary>
+    public static readonly TimeSpan MetadataAttemptTimeout = TimeSpan.FromSeconds(90);
+
     // Fields requested on every file list/get (keep minimal to reduce response size)
     private const string FileFields = "id,name,mimeType,md5Checksum,size,modifiedTime,parents,trashed,headRevisionId";
     private const string ListFields = $"nextPageToken,files({FileFields})";
@@ -53,7 +56,7 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
             HttpClientInitializer = credential,
             ApplicationName       = "SyncIt",
         });
-        _retryPolicy         = RetryHelper.CreateDrivePolicy(logger, config?.MetadataRetryPolicy);
+        _retryPolicy         = RetryHelper.CreateDrivePolicy(logger, config?.MetadataRetryPolicy, MetadataAttemptTimeout);
         _uploadRetryPolicy   = RetryHelper.CreateDrivePolicy(logger, config?.UploadRetryPolicy);
         _downloadRetryPolicy = RetryHelper.CreateDrivePolicy(logger, config?.DownloadRetryPolicy);
     }

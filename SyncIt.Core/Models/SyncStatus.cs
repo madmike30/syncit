@@ -9,6 +9,7 @@ public enum SyncState
     Authenticating,
     SafetyHalt,        // startup validation failed — awaiting user action
     DeletionFrozen,    // deletion threshold exceeded — awaiting user approval
+    Offline,           // Google Drive unreachable (no network / DNS) — retrying automatically
 }
 
 /// <summary>Runtime status snapshot — sent over IPC to the tray app every 10s and on changes.</summary>
@@ -54,4 +55,13 @@ public class SyncPairStatus
     public int      ExhaustedRetries  { get; set; }
     public string?  LastError         { get; set; }
     public List<string> SelectedSubfolders { get; set; } = new();
+
+    /// <summary>Account e-mail of the pair (1.4+).</summary>
+    public string? AccountEmail      { get; set; }
+    /// <summary>Account colour, "#RRGGBB" (1.4+).</summary>
+    public string? AccountColor      { get; set; }
+    /// <summary>"My Drive", "My Drive / Folder" or "Shared drive: X".</summary>
+    public string? RemoteLocation    { get; set; }
+    public SyncMode Mode             { get; set; }
+    public bool    AccountPaused     { get; set; }
 }

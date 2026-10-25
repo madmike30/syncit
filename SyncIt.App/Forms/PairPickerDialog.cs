@@ -12,10 +12,10 @@ internal sealed class PairPickerDialog : Form
     private readonly ListBox _listBox;
     public SyncPair? SelectedPair { get; private set; }
 
-    public PairPickerDialog(List<SyncPair> pairs)
+    public PairPickerDialog(List<SyncPair> pairs, SyncConfig? config = null)
     {
         Text            = "Select Sync Pair";
-        Size            = new Size(380, 240);
+        Size            = new Size(620, 260);
         MinimumSize     = new Size(300, 200);
         StartPosition   = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -37,7 +37,7 @@ internal sealed class PairPickerDialog : Form
         };
 
         foreach (var pair in pairs)
-            _listBox.Items.Add(new PairItem(pair));
+            _listBox.Items.Add(new PairItem(pair, config));
 
         if (_listBox.Items.Count > 0)
             _listBox.SelectedIndex = 0;
@@ -78,11 +78,12 @@ internal sealed class PairPickerDialog : Form
         Close();
     }
 
-    private sealed class PairItem(SyncPair pair)
+    private sealed class PairItem(SyncPair pair, SyncConfig? config)
     {
         public SyncPair Pair { get; } = pair;
-        public override string ToString() =>
-            string.IsNullOrEmpty(Pair.RemoteFolderName) ? Pair.Id : Pair.RemoteFolderName;
+        public override string ToString() => config is not null
+            ? SyncIt.Core.Services.PairSettingsEditor.DescribePair(Pair, config)
+            : (string.IsNullOrEmpty(Pair.RemoteFolderName) ? Pair.Id : Pair.RemoteFolderName);
     }
     // Fluent theme (see Theme.cs): remaps colors/fonts by role, dark mode, rounded window corners.
     protected override void OnHandleCreated(EventArgs e)

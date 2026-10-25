@@ -13,7 +13,7 @@ A lightweight, bidirectional Google Drive sync tool for Windows. Keep a local fo
 | ![Settings accounts](docs/images/settings-accounts-light.png) | ![Settings folders](docs/images/settings-folders-light.png) |
 | **Settings → Appearance** | **Settings → Updates** |
 | ![Settings appearance](docs/images/settings-appearance-light.png) | ![Settings updates](docs/images/settings-updates-light.png) |
-| **Settings → General (startup, bandwidth)** | **Add folder → account and drive** |
+| **Settings → General (startup, bandwidth, schedule, notifications)** | **Add folder → account and drive** |
 | ![Settings general](docs/images/settings-general-light.png) | ![Add folder location](docs/images/add-folder-location-light.png) |
 
 | Sign-in |
@@ -22,7 +22,7 @@ A lightweight, bidirectional Google Drive sync tool for Windows. Keep a local fo
 
 ## Features
 
-- **Multiple Google accounts at once** — add several accounts (Settings → Accounts); every sync folder belongs to one account, each account has its own DPAPI-encrypted sign-in and its own Disconnect
+- **Multiple Google accounts at once** — add several accounts (**+ Add Google account** in the dashboard header, the tray menu, or Settings → Accounts); every sync folder belongs to one account, each account has its own DPAPI-encrypted sign-in and its own Disconnect
 - **Shared drives** — sync a shared drive (Team Drive) with a local folder; pick it when you add a folder
 - **Auto-update** — checks GitHub Releases daily, tells you in the tray, downloads the installer, verifies it against the release's `SHA256SUMS` and installs only when you click OK (can be turned off)
 - **Settings window** — accounts, folders (exclude patterns, conflict rule, pause per folder), appearance (light by default, dark, follow Windows), updates, start with Windows, upload/download bandwidth limits
@@ -36,7 +36,12 @@ A lightweight, bidirectional Google Drive sync tool for Windows. Keep a local fo
 - **Google Docs export** — auto-convert Docs → .docx, Sheets → .xlsx, Slides → .pptx, Drawings → .svg
 - **Windows 11 look** — Fluent-style windows and tray menu, light/dark that follows Windows, your accent color, rounded corners, crisp high-DPI icons
 - **Support tools** — tray menu: About (version), Open Logs Folder, Export Logs (zip with tokens/secrets/emails redacted); crash reports written to the logs folder
-- **System tray UI** — icon states, account info, storage bar, recent activity, and detailed status window
+- **Recovers from network outages on its own** — shows "Offline - retrying", backs off, and retries immediately when the network returns or the PC wakes from sleep
+- **Clear account per folder** — colour badge, `Google Drive · account` title and Drive location on every folder card, account column in activity
+- **Pause per folder or per account**, and a **sync schedule** (active hours)
+- **Backup only mode** — PC → Drive, never changes files on the PC; optionally keep deleted files on Drive
+- **Notifications** for conflicts, deletions and mass-deletion protection (can be turned off)
+- **Map a folder to any My Drive folder** (e.g. `My Drive / Work`), not only the drive root`n- **System tray UI** — icon states, account info, storage bar, recent activity, and detailed status window
 - **Secure credentials** — OAuth2 tokens encrypted with DPAPI; client secrets stored in Windows Credential Manager
 
 ## Why SyncIt vs Google Drive for desktop
@@ -55,6 +60,11 @@ Google Drive for desktop is the right choice for most people. SyncIt is for peop
 | Docs/Sheets/Slides **exported to .docx/.xlsx/.pptx** so they open offline in Office | ✅ | Shortcut files that open in the browser |
 | Explorer status icons | ✅ | ✅ |
 | Bandwidth limits | ✅ | ✅ |
+| **Backup-only folders** (PC → Drive, never touches local files) | ✅ per folder | ❌ ("Computers" backup is separate and not per-folder configurable) |
+| **Sync schedule** (active hours) | ✅ | ❌ |
+| **Pause per folder or per account** | ✅ | Pause all only |
+| **Recovers on its own after network loss / sleep** with an "Offline - retrying" status | ✅ | ✅ |
+| Notifications for conflicts and deletions (switchable) | ✅ | Partial |
 | Portable (no install) option | ✅ portable zip | ❌ |
 | Open source (MIT), no SyncIt server | ✅ | ❌ |
 | Google Photos, streaming/virtual drive, macOS | ❌ | ✅ |

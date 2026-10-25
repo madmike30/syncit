@@ -244,6 +244,12 @@ public sealed class SyncItApp : ApplicationContext
                 {
                     try
                     {
+                        var plan = ConfigDiff.Plan(_config, newConfig);
+                        if (!plan.RestartAll)
+                        {
+                            await ApplyPartialReloadAsync(newConfig, plan, driveService);
+                            return;
+                        }
                         _logger.LogInformation("Config reloaded — restarting engines...");
                         await StopEnginesAsync();
 
@@ -281,6 +287,7 @@ public sealed class SyncItApp : ApplicationContext
                         // Use current drive service and CTS (not stale captured locals)
                         var currentDrive = _driveService as GoogleDriveService ?? driveService;
                         await StartEnginesAsync(currentDrive, reloadGlobFilter, new AtomicFileWriter(CreateLogger<AtomicFileWriter>()), liveCt);
+                        LogAccountsReady();
                     }
                     catch (Exception ex)
                     {
@@ -348,7 +355,7 @@ public sealed class SyncItApp : ApplicationContext
                 _logger.LogError(ex, "Could not initialize account '{Id}'.", account.Id);
             }
         }
-        _logger.LogInformation("Accounts ready: {Count} of {Total}.", _credentials.Count, _config.Accounts.Count);
+        LogAccountsReady();
         if (emailsChanged) await SaveConfigQuietlyAsync(ct);
         return primary;
     }
@@ -411,7 +418,8 @@ public sealed class SyncItApp : ApplicationContext
             _config.Accounts.Add(account);
             lock (_drivesLock) _credentials[account.Id] = credential;
             await SaveConfigQuietlyAsync();
-            _logger.LogInformation("Account added: {Id}.", account.Id);
+            _logger.LogInformation("Account added: {Id} ({Email}).", account.Id, account.Email);
+            LogAccountsReady();
             InvokeUI(() => ShowBalloon("SyncIt", $"Added {info.Email}. Use Add folder to sync one of its folders.", ToolTipIcon.Info));
         }
         catch (Exception ex)
@@ -458,6 +466,7 @@ public sealed class SyncItApp : ApplicationContext
         foreach (var pair in removed) await store.DeletePairAsync(pair.Id);
         await SaveConfigQuietlyAsync();
         _logger.LogInformation("Account {Id} disconnected; {Count} pair(s) removed.", accountId, removed.Count);
+        LogAccountsReady();
 
         _driveService = DriveForAccount(_config.Accounts[0].Id) ?? _driveService;
         _lastAccountFetch = DateTime.MinValue;
@@ -581,14 +590,19 @@ public sealed class SyncItApp : ApplicationContext
             await StartEnginesCoreAsync(driveService, globFilter, atomicWriter, ct);
         });
 
+    private readonly Dictionary<string, DeletionCoordinator> _coordByPair = new();
+
     private async Task StartEnginesCoreAsync(
         GoogleDriveService driveService,
         GlobFilter globFilter,
         AtomicFileWriter atomicWriter,
-        CancellationToken ct)
+        CancellationToken ct,
+        ISet<string>? only = null)
     {
         foreach (var pair in SyncPairPlanner.EnabledUnique(_config.SyncPairs))
         {
+            if (only is not null && !only.Contains(pair.Id)) continue;
+            lock (_enginesLock) { if (_engines.Any(e => e.PairId == pair.Id)) continue; } // never two engines per pair
             var pairDrive = ResolveDrive(pair);
             if (pairDrive is null)
             {
@@ -609,7 +623,8 @@ public sealed class SyncItApp : ApplicationContext
                 _activityLog);
 
             deletionCoord.DeletionFreezeTriggered += OnDeletionFreezeTriggered;
-            lock (_enginesLock) { _deletionCoordinators.Add(deletionCoord); }
+            HookActivityNotifications();
+            lock (_enginesLock) { _deletionCoordinators.Add(deletionCoord); _coordByPair[pair.Id] = deletionCoord; }
 
             var changeQueue   = new ChangeQueue();
             var conflictRes   = new ConflictResolver(CreateLogger<ConflictResolver>());
@@ -624,8 +639,11 @@ public sealed class SyncItApp : ApplicationContext
             engine.TransferTracker.ProgressChanged += OnTransferProgress;
 
             lock (_enginesLock) { _engines.Add(engine); }
+            var acct = AccountRegistry.ForPair(_config, pair);
+            _logger.LogInformation("Starting pair {Id} for account {Account} ({AccountId}): {Local} <-> {Remote}",
+                pair.Id, acct?.Email ?? "?", acct?.Id ?? "?", pair.LocalPath, AccountColors.RemoteLocation(pair));
             await engine.StartAsync(pair, ct);
-            if (pair.Paused || _globalPaused) engine.Pause();
+            if (pair.Paused || _globalPaused || AccountRegistry.ForPair(_config, pair)?.Paused == true) engine.Pause();
         }
 
         _logger.LogInformation("Started {Count} sync engine(s).", _engines.Count);
@@ -633,15 +651,72 @@ public sealed class SyncItApp : ApplicationContext
 
     private Task StopEnginesAsync() => _lifecycle.RunAsync(StopEnginesCoreAsync);
 
-    private async Task StopEnginesCoreAsync()
+    /// <summary>Config reload that only touches the pairs that changed (1.4+). Other pairs keep running - no rescans.</summary>
+    private Task ApplyPartialReloadAsync(SyncConfig newConfig, ReloadPlan plan, GoogleDriveService fallbackDrive) =>
+        _lifecycle.RunAsync(async () =>
+        {
+            var running = _config;
+            ConfigDiff.ApplyHotSettings(running, newConfig);
+            if (plan.IsNoop)
+            {
+                _config = newConfig;
+                ConfigDiff.ApplyHotSettings(_config, newConfig);
+                _logger.LogInformation("Config reloaded - no sync folder changed, nothing restarted.");
+                LogAccountsReady();
+                return;
+            }
+            _logger.LogInformation("Config reloaded - stopping {Stop} and starting {Start} pair(s); others keep running.", plan.Stop.Count, plan.Start.Count);
+            if (plan.Stop.Count > 0) await StopEnginesCoreAsync(plan.Stop);
+
+            var oldConfig = _config;
+            _config = newConfig;
+            AccountRegistry.Migrate(newConfig, p => CredentialHelper.TokenExists(PathHelper.Expand(p)));
+            var changed = AccountRegistry.PairsWithChangedRemote(oldConfig, newConfig).Where(plan.Start.Contains).ToList();
+            if (changed.Count > 0)
+            {
+                var store = CreateStateStore();
+                await store.InitializeAsync(_engineCts.Token);
+                foreach (var id in changed)
+                {
+                    _logger.LogInformation("Pair '{Id}' remote changed — resetting its sync state.", id);
+                    await store.DeletePairAsync(id);
+                }
+            }
+
+            foreach (var (id, paused) in plan.PauseChanges)
+            {
+                SyncEngine? e;
+                lock (_enginesLock) { e = _engines.FirstOrDefault(x => x.PairId == id); }
+                if (e is null) continue;
+                if (paused || _globalPaused) e.Pause(); else e.Resume();
+                _logger.LogInformation("Pair {Id} {State}.", id, paused ? "paused" : "resumed");
+            }
+
+            if (plan.Start.Count > 0)
+            {
+                var currentDrive = _driveService as GoogleDriveService ?? fallbackDrive;
+                await StartEnginesCoreAsync(currentDrive, new GlobFilter(), new AtomicFileWriter(CreateLogger<AtomicFileWriter>()), _engineCts.Token, plan.Start);
+            }
+            LogAccountsReady();
+            PushStatus();
+        });
+
+    private void LogAccountsReady() =>
+        _logger.LogInformation("Accounts ready: {Count} of {Total} ({Emails}).", _credentials.Count, _config.Accounts.Count,
+            string.Join(", ", _config.Accounts.Select(a => string.IsNullOrEmpty(a.Email) ? a.Id : a.Email)));
+
+    private async Task StopEnginesCoreAsync() => await StopEnginesCoreAsync(null);
+
+    private async Task StopEnginesCoreAsync(ISet<string>? only)
     {
         // Snapshot under lock to avoid races with concurrent Add/reads
         SyncEngine[] engines;
         DeletionCoordinator[] coordinators;
         lock (_enginesLock)
         {
-            engines = _engines.ToArray();
-            coordinators = _deletionCoordinators.ToArray();
+            engines = _engines.Where(e => only is null || only.Contains(e.PairId)).ToArray();
+            coordinators = only is null ? _deletionCoordinators.ToArray()
+                : _coordByPair.Where(kv => only.Contains(kv.Key)).Select(kv => kv.Value).ToArray();
         }
 
         // Unsubscribe event handlers BEFORE disposing to prevent leaks
@@ -660,8 +735,10 @@ public sealed class SyncItApp : ApplicationContext
         }
         lock (_enginesLock)
         {
-            _engines.Clear();
-            _deletionCoordinators.Clear();
+            foreach (var e in engines) _engines.Remove(e);
+            foreach (var c in coordinators) _deletionCoordinators.Remove(c);
+            foreach (var key in _coordByPair.Where(kv => coordinators.Contains(kv.Value)).Select(kv => kv.Key).ToList())
+                _coordByPair.Remove(key);
         }
     }
 
@@ -724,6 +801,17 @@ public sealed class SyncItApp : ApplicationContext
         SyncEngine[] engines;
         lock (_enginesLock) { engines = _engines.ToArray(); }
         var pairStatuses = engines.Select(e => e.GetStatus()).ToList();
+        foreach (var ps in pairStatuses)
+        {
+            var cfgPair = _config.SyncPairs.FirstOrDefault(p => p.Id == ps.SyncPairId);
+            if (cfgPair is null) continue;
+            var acc = AccountRegistry.ForPair(_config, cfgPair);
+            ps.AccountEmail   = AccountColors.Label(_config, cfgPair);
+            ps.AccountColor   = AccountColors.For(_config, acc?.Id);
+            ps.RemoteLocation = AccountColors.RemoteLocation(cfgPair);
+            ps.Mode           = cfgPair.Mode;
+            ps.AccountPaused  = acc?.Paused == true;
+        }
         var status = new SyncStatus
         {
             State                 = _globalPaused ? SyncState.Paused : SyncState.Idle,
@@ -736,6 +824,7 @@ public sealed class SyncItApp : ApplicationContext
             pairStatuses.Any(p => p.State == SyncState.SafetyHalt) ? SyncState.SafetyHalt :
             pairStatuses.Any(p => p.State == SyncState.DeletionFrozen) ? SyncState.DeletionFrozen :
             pairStatuses.Any(p => p.State == SyncState.Error) ? SyncState.Error :
+            pairStatuses.Any(p => p.State == SyncState.Offline) ? SyncState.Offline :
             pairStatuses.Any(p => p.State == SyncState.Syncing) ? SyncState.Syncing :
             pairStatuses.Count > 0 && pairStatuses.All(p => p.State == SyncState.Paused) ? SyncState.Paused :
             SyncState.Idle;
@@ -786,7 +875,8 @@ public sealed class SyncItApp : ApplicationContext
         _menu.Items.Add("Sync Now",            null, OnSyncNow);
         _pauseItem = new ToolStripMenuItem("Pause Syncing", null, OnPauseResume);
         _menu.Items.Add(_pauseItem);
-        _menu.Items.Add("Account...",         null, OnSwitchAccount);
+        _menu.Items.Add("Accounts...",        null, (_, _) => ShowSettings("Accounts"));
+        _menu.Items.Add("Add Google account...", null, async (_, _) => await UiGuard.RunAsync(AddAccountAsync, "AddAccount"));
         _menu.Items.Add("Settings...",        null, (_, _) => ShowSettings());
         _updateItem = new ToolStripMenuItem("Install update...", null, async (_, _) => await UiGuard.RunAsync(InstallUpdateAsync, "InstallUpdate")) { Visible = false };
         _menu.Items.Add(_updateItem);
@@ -827,6 +917,7 @@ public sealed class SyncItApp : ApplicationContext
         {
             SyncState.Syncing        => _iconManager.SyncingIcon,
             SyncState.Paused         => _iconManager.PausedIcon,
+            SyncState.Offline        => _iconManager.WarningIcon,
             SyncState.Error          => _iconManager.ErrorIcon,
             SyncState.SafetyHalt     => _iconManager.ErrorIcon,
             SyncState.DeletionFrozen => _iconManager.WarningIcon,
@@ -840,6 +931,7 @@ public sealed class SyncItApp : ApplicationContext
             SyncState.Idle    => "Up to date",
             SyncState.Syncing => "Syncing...",
             SyncState.Paused  => "Paused",
+            SyncState.Offline => "Offline - retrying",
             SyncState.Error   => "Error",
             _                 => status.State.ToString(),
         };
@@ -879,10 +971,12 @@ public sealed class SyncItApp : ApplicationContext
             fetchActivity:    async () => _activityLog is null ? null : await _activityLog.GetRecentAsync(200, sinceUtc: _sessionStartUtc),
             changeSyncFolder: pairId => ChangeSyncFolder(pairId),
             openSyncFolder:   () => OpenSyncFolder(),
-            showAccountForm:  () => ShowAccountForm(),
+            showAccountForm:  () => ShowSettings("Accounts"),
+            addAccount:       () => _ = UiGuard.RunAsync(AddAccountAsync, "AddAccount"),
             addSyncFolder:    () => AddSyncFolder(),
             selectSubfolders:  pairId => SelectSubfolders(pairId),
             fetchAllActivity: async () => _activityLog is null ? null : await _activityLog.GetRecentAsync(500),
+            togglePairPause:  pairId => TogglePairPause(pairId),
             showSettings:     () => ShowSettings()
         );
         _dashboard.FormClosed += (_, _) => _dashboard = null;
@@ -1172,6 +1266,14 @@ public sealed class SyncItApp : ApplicationContext
             {
                 if (picker.ShowDialog() != DialogResult.OK || picker.AccountId is null) return;
                 AccountRegistry.ApplyLocation(pair, picker.AccountId, picker.SharedDrive);
+                if (picker.FolderPath is { } folderPath)
+                {
+                    var targetDrive = ResolveDrive(pair) ?? _driveService;
+                    if (targetDrive is null) return;
+                    var folderId = Task.Run(() => targetDrive.EnsureFolderPathAsync(pair.RemoteFolderId, folderPath)).GetAwaiter().GetResult();
+                    AccountRegistry.ApplyRemoteFolder(pair, folderId, folderPath);
+                    _logger.LogInformation("New pair {Id} targets {Remote}.", pair.Id, pair.RemoteFolderName);
+                }
             }
             var pickerDrive = ResolveDrive(pair) ?? _driveService;
             _suppressConfigReload = true;
@@ -1345,6 +1447,7 @@ public sealed class SyncItApp : ApplicationContext
 
         // 11. Restart status push loop
         _ = Task.Run(() => StatusPushLoopAsync(ct));
+        HookConnectivityEvents();
 
         _logger.LogInformation("Account switched to {Email}", _accountInfo.Email);
     }
@@ -1355,8 +1458,59 @@ public sealed class SyncItApp : ApplicationContext
         _autoStartItem.Checked = AutoStartHelper.IsEnabled;
     }
 
+    // =========================================================================
+    // Connectivity: retry immediately when the network returns or the PC wakes up
+    // =========================================================================
+
+    private bool _connectivityHooked;
+
+    private void HookConnectivityEvents()
+    {
+        if (_connectivityHooked) return;
+        _connectivityHooked = true;
+        System.Net.NetworkInformation.NetworkChange.NetworkAvailabilityChanged += OnNetworkAvailabilityChanged;
+        System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged += OnNetworkAddressChanged;
+        Microsoft.Win32.SystemEvents.PowerModeChanged += OnPowerModeChanged;
+    }
+
+    private void UnhookConnectivityEvents()
+    {
+        if (!_connectivityHooked) return;
+        _connectivityHooked = false;
+        System.Net.NetworkInformation.NetworkChange.NetworkAvailabilityChanged -= OnNetworkAvailabilityChanged;
+        System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged -= OnNetworkAddressChanged;
+        Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+    }
+
+    private void OnNetworkAvailabilityChanged(object? sender, System.Net.NetworkInformation.NetworkAvailabilityEventArgs e)
+    {
+        _logger.LogInformation("Network {State}.", e.IsAvailable ? "available" : "unavailable");
+        if (e.IsAvailable) WakeEngines("network available");
+    }
+
+    private void OnNetworkAddressChanged(object? sender, EventArgs e)
+    {
+        if (System.Net.NetworkInformation.NetworkInterface.GetIsNetworkAvailable()) WakeEngines("network address changed");
+    }
+
+    private void OnPowerModeChanged(object? sender, Microsoft.Win32.PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == Microsoft.Win32.PowerModes.Resume) WakeEngines("resumed from sleep");
+    }
+
+    private void WakeEngines(string reason)
+    {
+        SyncEngine[] snapshot;
+        lock (_enginesLock) { snapshot = _engines.ToArray(); }
+        var waking = snapshot.Where(e => e.ConsecutiveCycleFailures > 0 || reason == "resumed from sleep").ToArray();
+        if (waking.Length == 0) return;
+        _logger.LogInformation("Connectivity change ({Reason}); retrying sync now for {Count} pair(s).", reason, waking.Length);
+        foreach (var e in waking) e.WakeUp();
+    }
+
     private async void OnExit(object? sender, EventArgs e)
     {
+        UnhookConnectivityEvents();
         _dashboard?.Close();
         _notifyIcon.Visible = false;
         _engineCts.Cancel();
@@ -1376,6 +1530,8 @@ public sealed class SyncItApp : ApplicationContext
     {
         // Show the warning dialog immediately on the UI thread — don't rely on
         // balloon tips which are easy to miss.
+        if (_config.NotifyDeletions)
+            InvokeUI(() => ShowBalloon("SyncIt: mass-deletion protection", $"{records.Count} deletion(s) are on hold for {PairAccountLabel(pairId)}. Nothing was deleted - review and approve or cancel.", ToolTipIcon.Warning));
         InvokeUI(() =>
         {
             _notifyIcon.Icon = _iconManager.WarningIcon;
@@ -1442,6 +1598,63 @@ public sealed class SyncItApp : ApplicationContext
     private void SetTooltip(string text) =>
         _notifyIcon.Text = text[..Math.Min(text.Length, 63)];
 
+    // ── Notifications for conflicts and deletions (batched: one toast per burst) ──
+    private IActivityLog? _notifyHookedLog;
+    private readonly List<ActivityRecord> _pendingNotices = new();
+    private System.Threading.Timer? _noticeTimer;
+
+    private void HookActivityNotifications()
+    {
+        if (_activityLog is not ActivityLog log || ReferenceEquals(_notifyHookedLog, log)) return;
+        if (_notifyHookedLog is ActivityLog old) old.Recorded -= OnActivityRecorded;
+        log.Recorded += OnActivityRecorded;
+        _notifyHookedLog = log;
+    }
+
+    private void OnActivityRecorded(ActivityRecord r)
+    {
+        if (!ActivityNotifier.ShouldNotify(r, _config.NotifyConflicts, _config.NotifyDeletions)) return;
+        lock (_pendingNotices)
+        {
+            _pendingNotices.Add(r);
+            _noticeTimer ??= new System.Threading.Timer(_ => FlushNotices(), null, 3000, Timeout.Infinite);
+        }
+    }
+
+    private void FlushNotices()
+    {
+        List<ActivityRecord> batch;
+        lock (_pendingNotices)
+        {
+            batch = _pendingNotices.ToList();
+            _pendingNotices.Clear();
+            _noticeTimer?.Dispose();
+            _noticeTimer = null;
+        }
+        var msg = ActivityNotifier.Summarize(batch, PairAccountLabel);
+        if (msg is { } m) InvokeUI(() => ShowBalloon(m.Title, m.Text, ToolTipIcon.Info));
+    }
+
+    private string? PairAccountLabel(string pairId)
+    {
+        var pair = _config.SyncPairs.FirstOrDefault(p => p.Id == pairId);
+        return pair is null ? null : AccountColors.Label(_config, pair);
+    }
+
+    // Per-pair and per-account pause (saved in syncit.json; the config watcher restarts engines).
+    private void TogglePairPause(string pairId)
+    {
+        var cfg = LoadConfigFromDisk();
+        var pair = cfg.SyncPairs.FirstOrDefault(p => p.Id == pairId);
+        if (pair is null) return;
+        pair.Paused = !pair.Paused;
+        File.WriteAllText(ConfigPath, JsonSerializer.Serialize(cfg, WriteOpts));
+    }
+
+    private SyncConfig LoadConfigFromDisk() => File.Exists(ConfigPath)
+        ? JsonSerializer.Deserialize<SyncConfig>(File.ReadAllText(ConfigPath), JsonOpts) ?? _config
+        : _config;
+
     private void ShowBalloon(string title, string text, ToolTipIcon icon)
     {
         if (!_traySettings.NotificationsEnabled) return;
@@ -1455,15 +1668,13 @@ public sealed class SyncItApp : ApplicationContext
             SyncState.Idle           => "Up to date",
             SyncState.Syncing        => "Syncing...",
             SyncState.Paused         => "Paused",
+            SyncState.Offline        => "Offline - retrying",
             SyncState.Error          => "Error",
             SyncState.SafetyHalt     => "Safety Halt",
             SyncState.DeletionFrozen => "Deletion Frozen",
             _ => status.State.ToString(),
         };
-        var tip = status.AccountEmail is not null
-            ? $"SyncIt — {status.AccountEmail}\n{state}"
-            : $"SyncIt — {state}";
-        return tip;
+        return TrayTooltip.Build(status, state);
     }
 
     private IFileStateStore CreateStateStore() =>

@@ -12,4 +12,7 @@ public class GoogleAccount
 
     /// <summary>DPAPI-encrypted token file, e.g. %APPDATA%\SyncIt\accounts\acc-1234abcd.bin.</summary>
     public string TokenStorePath { get; set; } = string.Empty;
+
+    /// <summary>Pause every sync folder of this account (1.4+).</summary>
+    public bool Paused { get; set; }
 }

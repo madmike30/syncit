@@ -59,6 +59,9 @@ public sealed class DashboardForm : Form
     private System.Windows.Forms.Timer _refreshTimer = null!;
 
     private readonly Action? _showSettings;
+    private readonly Action? _addAccount;
+    private readonly Action<string>? _togglePairPause;
+    private Dictionary<string, (string Email, Color Color)> _pairAccounts = new();
 
     public DashboardForm(
         Func<SyncStatus?> getStatus,
@@ -73,8 +76,12 @@ public sealed class DashboardForm : Form
         Action<string>? selectSubfolders = null,
         Func<Task<List<ActivityRecord>?>>? fetchAllActivity = null,
         Action? addSyncFolder = null,
-        Action? showSettings = null)
+        Action? showSettings = null,
+        Action? addAccount = null,
+        Action<string>? togglePairPause = null)
     {
+        _togglePairPause  = togglePairPause;
+        _addAccount       = addAccount;
         _showSettings     = showSettings;
         _addSyncFolder    = addSyncFolder;
         _getStatus        = getStatus;
@@ -133,24 +140,54 @@ public sealed class DashboardForm : Form
         if (_showAccountForm is not null)
             _accountLabel.Click += (_, _) => _showAccountForm();
 
-        var switchLabel = new LinkLabel
+        // Accounts: a clear primary "+ Add Google account" button plus "Manage accounts"
+        // (Settings > Accounts, where each account has its own Disconnect button).
+        var addAccountBtn = new Button
         {
-            Text      = "Switch account",
-            Font      = new Font("Segoe UI", 8.5f),
-            LinkColor = Color.FromArgb(180, 200, 255),
+            Text      = "+ Add Google account",
             AutoSize  = true,
-            Anchor    = AnchorStyles.Top | AnchorStyles.Right,
-            Location  = new Point(header.Width - 120, 52),
+            Height    = 32,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Color.White,
+            ForeColor = HeaderBg,
+            Font      = new Font("Segoe UI", 9f, FontStyle.Bold),
             Cursor    = Cursors.Hand,
+            Anchor    = AnchorStyles.Top | AnchorStyles.Right,
+            Padding   = new Padding(6, 0, 6, 0),
         };
-        if (_showAccountForm is not null)
-            switchLabel.Click += (_, _) => _showAccountForm();
+        addAccountBtn.FlatAppearance.BorderSize = 0;
+        if (_addAccount is not null) addAccountBtn.Click += (_, _) => _addAccount();
 
+        var manageLabel = new Button
+        {
+            Text      = "Manage accounts",
+            AutoSize  = true,
+            Height    = 32,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = HeaderBg,
+            ForeColor = Color.White,
+            Font      = new Font("Segoe UI", 9f),
+            Cursor    = Cursors.Hand,
+            Padding   = new Padding(6, 0, 6, 0),
+        };
+        manageLabel.FlatAppearance.BorderColor = Color.FromArgb(200, 220, 255);
+        manageLabel.FlatAppearance.BorderSize = 1;
+        if (_showAccountForm is not null)
+            manageLabel.Click += (_, _) => _showAccountForm();
+
+        var rightPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Right, FlowDirection = FlowDirection.RightToLeft, WrapContents = false,
+            AutoSize = true, BackColor = Color.Transparent, Padding = new Padding(0, 24, 14, 0),
+        };
+        addAccountBtn.Anchor = AnchorStyles.Right;
+        manageLabel.Margin = new Padding(0, 0, 8, 0);
+        addAccountBtn.Margin = new Padding(0);
         header.Controls.Add(titleLabel);
         header.Controls.Add(_accountLabel);
-        if (_showAccountForm is not null)
-            header.Controls.Add(switchLabel);
-
+        if (_addAccount is not null) rightPanel.Controls.Add(addAccountBtn);
+        if (_showAccountForm is not null) rightPanel.Controls.Add(manageLabel);
+        header.Controls.Add(rightPanel);
         // ── Status + Storage card ───────────────────────────────────
         var statusCard = MakeCard(90);
 
@@ -256,6 +293,7 @@ public sealed class DashboardForm : Form
         _activityList.Columns.Add("Type",    70);
         _activityList.Columns.Add("File",    220);
         _activityList.Columns.Add("Size",    70);
+        _activityList.Columns.Add("Account", 150);
 
         var activityCard = MakeCard(168);
         activityCard.Controls.Add(_activityList);
@@ -370,6 +408,7 @@ public sealed class DashboardForm : Form
             SyncState.Idle           => ("\u25CF", AccentGreen,  "Up to date"),
             SyncState.Syncing        => ("\u25CF", AccentBlue,   "Syncing..."),
             SyncState.Paused         => ("\u25CF", SubtleText,   "Paused"),
+            SyncState.Offline        => ("\u25CF", SubtleText,   "Offline - retrying"),
             SyncState.Error          => ("\u25CF", AccentRed,    "Error"),
             SyncState.SafetyHalt     => ("\u25CF", AccentRed,    "Safety Halt"),
             SyncState.DeletionFrozen => ("\u25CF", AccentOrange, "Deletions Frozen"),
@@ -408,7 +447,7 @@ public sealed class DashboardForm : Form
     private void RebuildPairCards(SyncStatus status)
     {
         var signature = string.Join("\n", status.PairStatuses.Select(p =>
-            $"{p.SyncPairId}|{p.State}|{p.LocalPath}|{p.PendingChanges}|{p.PendingDeletions}|{p.LastError}|{string.Join(",", p.SelectedSubfolders)}"))
+            $"{p.SyncPairId}|{p.State}|{p.AccountEmail}|{p.AccountColor}|{p.RemoteLocation}|{p.Mode}|{p.LocalPath}|{p.PendingChanges}|{p.PendingDeletions}|{p.LastError}|{string.Join(",", p.SelectedSubfolders)}"))
             + $"#{_pairsContainer.Width}";
         if (signature == _pairsSignature) return;
         _pairsSignature = signature;
@@ -418,9 +457,13 @@ public sealed class DashboardForm : Form
         _pairsContainer.Controls.Clear();
         foreach (var c in old) c.Dispose();
 
+        _pairAccounts = status.PairStatuses.ToDictionary(p => p.SyncPairId,
+            p => (p.AccountEmail ?? "", ParseColor(p.AccountColor)));
+
         int y = 0;
         foreach (var pair in status.PairStatuses)
         {
+            var accColor = ParseColor(pair.AccountColor);
             var card = new Panel
             {
                 Location  = new Point(0, y),
@@ -436,6 +479,7 @@ public sealed class DashboardForm : Form
                 SyncState.Idle           => ("", AccentGreen,  "Up to date"),
                 SyncState.Syncing        => ("", AccentBlue,   "Syncing"),
                 SyncState.Paused         => ("", SubtleText,   "Paused"),
+                SyncState.Offline        => ("", SubtleText,   "Offline - retrying"),
                 SyncState.Error          => ("", AccentRed,    "Error"),
                 SyncState.DeletionFrozen => ("", AccentOrange, "Frozen"),
                 _                        => ("", SubtleText,   pair.State.ToString()),
@@ -450,13 +494,21 @@ public sealed class DashboardForm : Form
                 Location  = new Point(12, 10),
             };
 
+            // Account badge: coloured circle with the account initial.
+            var badge = new AccountBadge(accColor, SyncIt.Core.Helpers.AccountColors.Initial(pair.AccountEmail))
+            {
+                Location = new Point(card.Width - 40, 60),
+                Anchor   = AnchorStyles.Top | AnchorStyles.Right,
+            };
             var nameLabel = new Label
             {
-                Text      = "Google Drive",
+                Text      = "Google Drive · " + (pair.AccountEmail ?? "no account"),
                 Font      = new Font("Segoe UI", 10f, FontStyle.Bold),
-                ForeColor = Color.FromArgb(30, 30, 30),
+                ForeColor = accColor,
                 AutoSize  = true,
                 Location  = new Point(28, 8),
+                MaximumSize = new Size(Math.Max(120, card.Width - 250), 0),
+                AutoEllipsis = true,
             };
 
             var stateLabel = new Label
@@ -470,7 +522,7 @@ public sealed class DashboardForm : Form
 
             var pathLabel = new Label
             {
-                Text      = pair.LocalPath ?? "",
+                Text      = $"{pair.RemoteLocation ?? "My Drive"}  \u2194  {pair.LocalPath}" + (pair.Mode == SyncMode.BackupOnly ? "   (backup only)" : ""),
                 Font      = new Font("Segoe UI", 8f),
                 ForeColor = SubtleText,
                 AutoSize  = true,
@@ -552,7 +604,7 @@ public sealed class DashboardForm : Form
                 stateLabel.Text += $"  \u2022  {pair.PendingChanges} pending, {pair.PendingDeletions} deletions";
             }
 
-            if (pair.LastError is not null)
+            if (pair.LastError is not null && pair.State != SyncState.Offline)
             {
                 stateLabel.Text += $"  \u2022  {pair.LastError}";
                 stateLabel.ForeColor = AccentRed;
@@ -565,6 +617,22 @@ public sealed class DashboardForm : Form
             card.Controls.Add(subfolderLabel);
             card.Controls.Add(selectFoldersBtn);
             card.Controls.Add(changeFolderBtn);
+            card.Controls.Add(badge);
+            if (_togglePairPause is not null)
+            {
+                var pausedNow = pair.State == SyncState.Paused;
+                var pauseLink = new LinkLabel
+                {
+                    Text = pausedNow ? "Resume" : "Pause",
+                    AutoSize = true,
+                    Font = new Font("Segoe UI", 8.5f),
+                    LinkColor = AccentBlue,
+                    Location = new Point(Math.Max(140, card.Width - 216), 40),
+                    Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                };
+                pauseLink.Click += (_, _) => { _togglePairPause(pairId); _pairsSignature = null; };
+                card.Controls.Add(pauseLink);
+            }
 
             _pairsContainer.Controls.Add(card);
             y += 104;
@@ -628,6 +696,12 @@ public sealed class DashboardForm : Form
                 item.SubItems.Add(r.Type.ToString());
                 item.SubItems.Add(Path.GetFileName(r.RelativePath));
                 item.SubItems.Add(FormatBytes(r.SizeBytes));
+                if (_pairAccounts.TryGetValue(r.SyncPairId, out var acc))
+                {
+                    item.UseItemStyleForSubItems = false;
+                    item.SubItems.Add("\u25CF " + acc.Email, acc.Color, item.BackColor, item.Font);
+                }
+                else item.SubItems.Add("");
 
                 item.ForeColor = r.Type switch
                 {
@@ -685,6 +759,32 @@ public sealed class DashboardForm : Form
             Height    = 30,
             Padding   = new Padding(16, 8, 0, 0),
         };
+    }
+
+    private static Color ParseColor(string? hex)
+    {
+        try { return string.IsNullOrEmpty(hex) ? Color.FromArgb(112, 112, 112) : ColorTranslator.FromHtml(hex); }
+        catch { return Color.FromArgb(112, 112, 112); }
+    }
+
+    /// <summary>Small coloured circle with the account initial.</summary>
+    private sealed class AccountBadge : Control
+    {
+        private readonly Color _color;
+        public AccountBadge(Color color, string initial)
+        {
+            _color = color; Text = initial; Size = new Size(26, 26);
+            SetStyle(ControlStyles.SupportsTransparentBackColor | ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint, true);
+            BackColor = Color.Transparent;
+            Font = new Font("Segoe UI", 9f, FontStyle.Bold);
+        }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            using var b = new SolidBrush(_color);
+            e.Graphics.FillEllipse(b, 0, 0, Width - 1, Height - 1);
+            TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        }
     }
 
     private static Button MakeActionButton(string text, Color accent, Action onClick)

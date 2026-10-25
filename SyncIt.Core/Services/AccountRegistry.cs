@@ -93,5 +93,27 @@ public static class AccountRegistry
 
     /// <summary>Pre-1.3 builds moved every non-root pair to the Drive root. Shared-drive pairs must keep their remote.</summary>
     public static bool NeedsLegacyRootMigration(SyncPair pair) =>
-        pair.SharedDriveId is null && pair.RemoteFolderId != "root" && !string.IsNullOrEmpty(pair.RemoteFolderId);
+        pair.SharedDriveId is null && !pair.RemoteFolderPinned && pair.RemoteFolderId != "root" && !string.IsNullOrEmpty(pair.RemoteFolderId);
+
+    /// <summary>"/ Work\\Docs/ " → "Work/Docs"; blank → null. Rejects ".." segments.</summary>
+    public static string? NormalizeRemoteFolderPath(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        var segs = text.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(s => s.Length > 0).ToList();
+        if (segs.Count > 0 && segs[0].Equals("My Drive", StringComparison.OrdinalIgnoreCase)) segs.RemoveAt(0);
+        if (segs.Any(s => s is "." or "..")) throw new ArgumentException("Folder path cannot contain . or ..");
+        return segs.Count == 0 ? null : string.Join("/", segs);
+    }
+
+    /// <summary>Points a pair at a specific folder inside its drive (1.4+); the pair keeps that folder as its root.</summary>
+    public static void ApplyRemoteFolder(SyncPair pair, string folderId, string folderPath)
+    {
+        pair.RemoteFolderId = folderId;
+        pair.RemoteFolderName = pair.SharedDriveId is null
+            ? "My Drive / " + folderPath
+            : pair.RemoteFolderName.Split(" / ")[0] + " / " + folderPath;
+        pair.RemoteFolderPinned = true;
+        pair.SelectedSubfolders.Clear();
+    }
 }

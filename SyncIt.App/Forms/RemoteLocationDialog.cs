@@ -17,6 +17,10 @@ internal sealed class RemoteLocationDialog : Form
     public string? AccountId { get; private set; }
     public SharedDriveInfo? SharedDrive { get; private set; }
 
+    /// <summary>Optional folder inside the drive, e.g. "SyncIt-Test" or "Work/Docs" (1.4+). Empty = the drive root.</summary>
+    public string? FolderPath { get; private set; }
+    private readonly TextBox _folder = new() { Width = 340, PlaceholderText = "Optional, e.g. SyncIt-Test or Work/Docs" };
+
     public RemoteLocationDialog(IEnumerable<GoogleAccount> accounts, Func<string, IGoogleDriveService?> driveFor)
     {
         _accounts = accounts.ToList();
@@ -25,7 +29,7 @@ internal sealed class RemoteLocationDialog : Form
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = MinimizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(400, 250);
+        ClientSize = new Size(400, 310);
         Font = Theme.Body(10f);
 
         var title = new Label { Text = "Sync with", Font = Theme.Display(14f), AutoSize = true, Location = new Point(24, 18) };
@@ -33,11 +37,13 @@ internal sealed class RemoteLocationDialog : Form
         _account.Location = new Point(24, 84);
         var locLabel = new Label { Text = "Drive", AutoSize = true, Location = new Point(24, 120) };
         _location.Location = new Point(24, 142);
-        _status.Location = new Point(24, 172);
+        var folderLabel = new Label { Text = "Folder in this drive (created if missing)", AutoSize = true, Location = new Point(24, 176) };
+        _folder.Location = new Point(24, 198);
+        _status.Location = new Point(24, 232);
         _status.ForeColor = Theme.SubtleText;
 
-        var ok = new Button { Text = "Next", DialogResult = DialogResult.OK, Size = new Size(96, 32), Location = new Point(184, 202) };
-        var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Size = new Size(96, 32), Location = new Point(288, 202) };
+        var ok = new Button { Text = "Next", DialogResult = DialogResult.OK, Size = new Size(96, 32), Location = new Point(184, 262) };
+        var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Size = new Size(96, 32), Location = new Point(288, 262) };
         Theme.StyleButton(ok, primary: true);
         Theme.StyleButton(cancel, primary: false);
         AcceptButton = ok;
@@ -46,9 +52,10 @@ internal sealed class RemoteLocationDialog : Form
         {
             AccountId = (_account.SelectedItem as AccountItem)?.Account.Id;
             SharedDrive = (_location.SelectedItem as LocationItem)?.Drive;
+            FolderPath = AccountRegistry.NormalizeRemoteFolderPath(_folder.Text);
         };
 
-        Controls.AddRange(new Control[] { title, accLabel, _account, locLabel, _location, _status, ok, cancel });
+        Controls.AddRange(new Control[] { title, accLabel, _account, locLabel, _location, folderLabel, _folder, _status, ok, cancel });
         foreach (var a in _accounts) _account.Items.Add(new AccountItem(a));
         _account.SelectedIndexChanged += async (_, _) => await LoadLocationsAsync();
         Theme.Apply(this);

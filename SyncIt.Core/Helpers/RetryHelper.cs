@@ -16,6 +16,18 @@ public static class RetryHelper
     /// Defaults: 5 retries with exponential backoff + jitter: ~1s, 2s, 4s, 8s, 16s.
     /// </summary>
     public static AsyncRetryPolicy CreateDrivePolicy(ILogger logger, RetryPolicyConfig? config = null)
+        => CreateRetry(logger, config);
+
+    /// <summary>
+    /// Retry policy where every single attempt is also bounded by <paramref name="attemptTimeout"/>.
+    /// A request that hangs (half-open connection after a network drop) is abandoned and retried
+    /// instead of blocking the sync loop forever.
+    /// </summary>
+    public static AsyncPolicy CreateDrivePolicy(ILogger logger, RetryPolicyConfig? config, TimeSpan attemptTimeout)
+        => CreateRetry(logger, config).WrapAsync(
+            Policy.TimeoutAsync(attemptTimeout, Polly.Timeout.TimeoutStrategy.Pessimistic));
+
+    private static AsyncRetryPolicy CreateRetry(ILogger logger, RetryPolicyConfig? config)
     {
         var retryCount = config?.RetryCount ?? 5;
         var baseDelayMs = config?.BaseDelayMs ?? 1000;
@@ -26,6 +38,8 @@ public static class RetryHelper
             .Handle<Google.GoogleApiException>(ex => DriveErrors.IsTransient(ex))
             .Or<HttpRequestException>()
             .Or<TaskCanceledException>(ex => ex.CancellationToken == default)
+            .Or<Polly.Timeout.TimeoutRejectedException>()
+            .Or<System.Net.Sockets.SocketException>()
             .WaitAndRetryAsync(
                 retryCount: retryCount,
                 sleepDurationProvider: (attempt, _) =>

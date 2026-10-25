@@ -373,6 +373,6 @@ public sealed class V13FeatureTests
     {
         var config = new SyncConfig { Accounts = { new GoogleAccount { Id = "a", Email = "me@x.com" } } };
         var pair = new SyncPair { LocalPath = @"C:\Work", RemoteFolderName = "Shared drive: Team", AccountId = "a", Paused = true };
-        PairSettingsEditor.DescribePair(pair, config).Should().Be(@"C:\Work  ↔  Shared drive: Team · me@x.com (paused)");
+        PairSettingsEditor.DescribePair(pair, config).Should().Be(@"me@x.com · Shared drive: Team  ↔  C:\Work (paused)");
     }
 }

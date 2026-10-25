@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.4.0 - 2026-10-25
+### Fixes
+- **Recovers by itself after a network outage.** A Drive request that hung after the connection dropped could block the sync loop forever, so the app looked disconnected until restarted. Every metadata request attempt is now capped (90 s) and retried, the poll loop can no longer stop on an error, and failed cycles back off (poll interval doubling, up to 5 min).
+- **Offline status.** When Google Drive can't be reached the tray and dashboard show **Offline - retrying**, and the log records when the connection is restored. SyncIt retries the moment the network returns or the PC wakes from sleep.
+- **Deleting a folder on the PC now trashes the Drive folder too** (not just its files) - through the same grace period and mass-deletion protection, and only when every file in it on Drive is one SyncIt synced (anything that never reached this PC is kept).
+- **Deleted sync root folder:** no more "FSW error … Access is denied" spam; the folder shows **Local folder missing**, sync waits, and resumes when the folder is back.
+- **Config changes restart only the folders that changed.** Other folders keep running (no 40 s rescan of the main folder when a second one is added, paused or edited).
+- Log shows `Accounts ready: N of N (emails)` after start, account add/remove and config reload, and each folder's start line names its account.
+
+### New
+- **Adding an account is easy to find:** **+ Add Google account** and **Manage accounts** in the dashboard header; **Accounts...** and **Add Google account...** in the tray menu; Settings → Accounts has the primary button above the list, and each account has its own **Pause** and **Disconnect…**.
+- **Every folder shows its account:** colour + initial badge per account, card title `Google Drive · account`, the Drive location (`My Drive`, `My Drive / Folder`, `Shared drive: X`), an **Account** column in Recent Activity, and account badges in the tray tooltip. Same in Settings → Folders and the folder picker.
+- **Pause per folder** (dashboard card) **and per account** (Settings → Accounts) - pausing never restarts other folders.
+- **Sync schedule (active hours)** in Settings → General; outside the window SyncIt pauses and catches up afterwards.
+- **Notifications for conflicts and deletions** (one per burst) and for mass-deletion protection, each with its own switch in Settings → General.
+- **Backup only mode per folder:** PC → Drive only; nothing on the PC is ever downloaded, overwritten or deleted; conflicts keep the PC copy; optionally keep files on Drive when they are deleted on the PC (default).
+- **Sync a My Drive folder directly:** when adding a folder you can type a Drive folder (e.g. `SyncIt-Test` or `Work/Docs`, created if missing) and the pair maps straight to it.
+- **Max file size per folder** in Settings → Folders (exclude patterns were already there; defaults skip `node_modules`, `.git`, `*.tmp`, `~$*`).
 ## 1.3.2 - 2026-10-24
 - **Errors from tray menu, dashboard links and Settings are always logged.** Actions started outside the normal window message loop (for example through Windows accessibility / UI Automation) could fail silently; they now go through the crash reporter (log + crash report + friendly message).
 

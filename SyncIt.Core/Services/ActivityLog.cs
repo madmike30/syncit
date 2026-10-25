@@ -65,8 +65,12 @@ public sealed class ActivityLog : IActivityLog
         _logger.LogDebug("ActivityLog initialized.");
     }
 
+    /// <summary>Raised for every recorded activity (used for notifications).</summary>
+    public event Action<ActivityRecord>? Recorded;
+
     public async Task RecordAsync(ActivityRecord record, CancellationToken ct = default)
     {
+        try { Recorded?.Invoke(record); } catch (Exception ex) { _logger.LogDebug(ex, "Activity listener failed."); }
         await using var conn = await OpenAsync(ct);
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """

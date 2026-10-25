@@ -50,6 +50,54 @@ public sealed class SyncEngine : ISyncEngine
     private SyncState _state = SyncState.Idle;
     private int _paused; // 0 = running, 1 = paused (accessed via Interlocked/Volatile)
     private string? _lastError;
+    private readonly SemaphoreSlim _wake = new(0, 1);
+    private int _consecutiveCycleFailures;
+
+    /// <summary>Consecutive failed remote sync cycles (0 = healthy).</summary>
+    public int ConsecutiveCycleFailures => Volatile.Read(ref _consecutiveCycleFailures);
+
+    /// <summary>
+    /// Cut the current poll/backoff wait short and run a sync cycle now. Called when the network
+    /// comes back or the PC resumes from sleep.
+    /// </summary>
+    public void WakeUp()
+    {
+        try { if (_wake.CurrentCount == 0) _wake.Release(); }
+        catch (SemaphoreFullException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    /// <summary>Clock used for active hours (tests replace it).</summary>
+    public Func<DateTime> LocalNow { get; set; } = () => DateTime.Now;
+
+    private bool _outsideHoursReported;
+
+    /// <summary>True while paused by the user or outside the configured active hours.</summary>
+    private bool IsHeld()
+    {
+        if (Volatile.Read(ref _paused) == 1) return true;
+        if (_localRootMissing) return true;
+        var active = SyncSchedule.IsActive(_config, LocalNow());
+        if (!active && !_outsideHoursReported)
+        {
+            _outsideHoursReported = true;
+            _logger.LogInformation("Outside active hours ({Hours}) - sync for pair {Id} waits.", SyncSchedule.Describe(_config), _pair.Id);
+            SetState(SyncState.Paused, "Outside active hours");
+        }
+        else if (active && _outsideHoursReported)
+        {
+            _outsideHoursReported = false;
+            _logger.LogInformation("Active hours started - sync for pair {Id} resumes.", _pair.Id);
+            SetState(SyncState.Idle);
+        }
+        return !active;
+    }
+
+    private async Task WaitForNextCycleAsync(TimeSpan delay, CancellationToken ct)
+    {
+        // Returns after the delay or as soon as WakeUp() is called.
+        await _wake.WaitAsync(delay, ct);
+    }
     private int _filesUploaded, _filesDownloaded, _conflictsResolved, _errors;
 
     // Semaphore: max 3 concurrent transfers
@@ -217,6 +265,9 @@ public sealed class SyncEngine : ISyncEngine
         await RunSyncCycleAsync(_pair, ct);
     }
 
+    /// <summary>ID of the pair this engine syncs.</summary>
+    public string PairId => _pair.Id;
+
     public SyncPairStatus GetStatus() => new()
     {
         SyncPairId         = _pair.Id,
@@ -250,7 +301,7 @@ public sealed class SyncEngine : ISyncEngine
         _fswChanged = (_, e) => OnLocalChange(pair, ChangeKind.Modified, e.FullPath);
         _fswDeleted = (_, e) => OnLocalChange(pair, ChangeKind.Deleted,  e.FullPath);
         _fswRenamed = (_, e) => OnLocalRename(pair, e.OldFullPath, e.FullPath);
-        _fswError   = (_, e) => _logger.LogWarning(e.GetException(), "FSW error for pair {Id}", pair.Id);
+        _fswError   = (_, e) => OnWatcherError(pair, e.GetException());
 
         _fsw.Created += _fswCreated;
         _fsw.Changed += _fswChanged;
@@ -260,6 +311,53 @@ public sealed class SyncEngine : ISyncEngine
 
         _logger.LogDebug("FileSystemWatcher set up for {Path}", pair.LocalPath);
     }
+
+    private volatile bool _localRootMissing;
+
+    /// <summary>True while the pair's local root folder does not exist (deleted, drive unplugged).</summary>
+    public bool LocalRootMissing => _localRootMissing;
+
+    private void OnWatcherError(SyncPair pair, Exception? ex)
+    {
+        if (!Directory.Exists(pair.LocalPath))
+        {
+            if (_localRootMissing) return; // already reported - no error spam
+            _localRootMissing = true;
+            try { if (_fsw is not null) _fsw.EnableRaisingEvents = false; } catch { }
+            _lastError = "Local folder missing";
+            _logger.LogWarning("Local folder for pair {Id} is missing ({Path}). Sync is on hold until it comes back.", pair.Id, pair.LocalPath);
+            SetState(SyncState.Error);
+            _ = Task.Run(() => WaitForLocalRootAsync(pair));
+            return;
+        }
+        _logger.LogWarning(ex, "FSW error for pair {Id}", pair.Id);
+    }
+
+    /// <summary>Called by the watcher error path and by tests.</summary>
+    internal void CheckLocalRoot() => OnWatcherError(_pair, null);
+
+    private async Task WaitForLocalRootAsync(SyncPair pair)
+    {
+        while (_localRootMissing)
+        {
+            try { await Task.Delay(LocalRootRecheck); } catch { return; }
+            if (!Directory.Exists(pair.LocalPath)) continue;
+            _localRootMissing = false;
+            _lastError = null;
+            _logger.LogInformation("Local folder for pair {Id} is back; resuming.", pair.Id);
+            try
+            {
+                StopFileSystemWatcher();
+                SetupFileSystemWatcher(pair);
+            }
+            catch (Exception e) { _logger.LogWarning(e, "Could not restart the folder watcher for pair {Id}", pair.Id); }
+            SetState(SyncState.Idle);
+            WakeUp();
+        }
+    }
+
+    /// <summary>How often a missing local root is re-checked (tests shorten it).</summary>
+    public TimeSpan LocalRootRecheck { get; set; } = TimeSpan.FromSeconds(10);
 
     private void OnLocalChange(SyncPair pair, ChangeKind kind, string absolutePath)
     {
@@ -325,20 +423,20 @@ public sealed class SyncEngine : ISyncEngine
 
     private async Task PollRemoteLoopAsync(SyncPair pair, CancellationToken ct)
     {
-        int consecutiveErrors = 0;
         while (!ct.IsCancellationRequested)
         {
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(_config.PollIntervalSeconds), ct);
+                var delay = RecoveryBackoff.Next(ConsecutiveCycleFailures, _config.PollIntervalSeconds,
+                    Math.Max(_config.RetryMaxDelaySeconds, 60));
+                await WaitForNextCycleAsync(delay, ct);
 
-                if (Volatile.Read(ref _paused) == 1) continue;
+                if (IsHeld()) continue;
 
-                await RunSyncCycleAsync(pair, ct);
-                consecutiveErrors = 0;
+                var ok = await RunSyncCycleAsync(pair, ct);
 
                 // After a successful sync cycle, re-enqueue any retryable failed operations
-                if (_retryTracker is not null)
+                if (ok && _retryTracker is not null)
                 {
                     var retryable = _retryTracker.GetRetryableEvents();
                     foreach (var ev in retryable)
@@ -348,22 +446,17 @@ public sealed class SyncEngine : ISyncEngine
                     }
                 }
             }
-            catch (OperationCanceledException) { break; }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
             catch (Exception ex)
             {
-                consecutiveErrors++;
-                _logger.LogError(ex, "Error in poll loop for pair {Id}", pair.Id);
+                // Never let the loop die: any unexpected error just counts as a failed cycle.
+                Interlocked.Increment(ref _consecutiveCycleFailures);
+                _logger.LogError(ex, "Error in poll loop for pair {Id}; will retry.", pair.Id);
                 _lastError = ex.Message;
                 SetState(SyncState.Error);
-
-                // Exponential backoff: base * 2^(errors-1), capped at maxDelay
-                var backoffSec = _config.RetryBaseDelaySeconds * Math.Pow(2, consecutiveErrors - 1);
-                backoffSec = Math.Min(backoffSec, _config.RetryMaxDelaySeconds);
-                await Task.Delay(TimeSpan.FromSeconds(backoffSec), ct);
             }
         }
     }
-
     // -------------------------------------------------------------------------
     // Change consumer
     // -------------------------------------------------------------------------
@@ -373,7 +466,7 @@ public sealed class SyncEngine : ISyncEngine
         await foreach (var change in _changeQueue.ReadAllAsync(ct))
         {
             // While paused, wait instead of dropping events
-            while (Volatile.Read(ref _paused) == 1 && !ct.IsCancellationRequested)
+            while (IsHeld() && !ct.IsCancellationRequested)
                 await Task.Delay(500, ct);
 
             try
@@ -426,7 +519,8 @@ public sealed class SyncEngine : ISyncEngine
     // Sync cycle (called by poll loop and TriggerSyncAsync)
     // -------------------------------------------------------------------------
 
-    private async Task RunSyncCycleAsync(SyncPair pair, CancellationToken ct)
+    /// <returns>true when the cycle reached Drive and finished; false when it failed.</returns>
+    private async Task<bool> RunSyncCycleAsync(SyncPair pair, CancellationToken ct)
     {
         SetState(SyncState.Syncing, "Checking for remote changes...");
         _metrics.StartCycle();
@@ -434,7 +528,7 @@ public sealed class SyncEngine : ISyncEngine
         try
         {
             var pageToken = await _stateStore.GetPageTokenAsync(pair.Id);
-            if (pageToken is null) return; // not initialized yet
+            if (pageToken is null) return true; // not initialized yet
 
             IReadOnlyList<Change> changes;
             string newToken;
@@ -455,8 +549,8 @@ public sealed class SyncEngine : ISyncEngine
                 LogActivity(ActivityType.Info, "", details: "Full rescan after Drive change history expired");
                 await _stateStore.SetLastSyncTimeAsync(pair.Id, DateTime.UtcNow);
                 _metrics.EndCycle();
-                SetState(SyncState.Idle);
-                return;
+                MarkCycleSucceeded(pair);
+                return true;
             }
             await _stateStore.SavePageTokenAsync(pair.Id, newToken);
 
@@ -493,12 +587,14 @@ public sealed class SyncEngine : ISyncEngine
 
             await _stateStore.SetLastSyncTimeAsync(pair.Id, DateTime.UtcNow);
             _metrics.EndCycle();
-            SetState(SyncState.Idle);
+            MarkCycleSucceeded(pair);
+            return true;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             _metrics.EndCycle();
             _logger.LogInformation("Sync cycle cancelled for pair {Id} (shutdown).", pair.Id);
+            return false;
         }
         catch (Exception ex)
         {
@@ -507,9 +603,34 @@ public sealed class SyncEngine : ISyncEngine
             _metrics.RecordError();
             _lastError = ex.Message;
             LogActivity(ActivityType.Error, "", details: $"Sync cycle failed: {ex.Message}");
-            _logger.LogError(ex, "Sync cycle failed for pair {Id}", pair.Id);
-            SetState(SyncState.Error);
+            var failures = Interlocked.Increment(ref _consecutiveCycleFailures);
+            if (NetworkErrors.IsNetworkError(ex))
+            {
+                _lastError = "Offline - retrying automatically";
+                var next = RecoveryBackoff.Next(failures, _config.PollIntervalSeconds, Math.Max(_config.RetryMaxDelaySeconds, 60));
+                _logger.LogWarning("Google Drive unreachable for pair {Id} (failure {N}): {Msg}. Next retry in {Sec:0}s or when the network comes back.",
+                    pair.Id, failures, ex.Message, next.TotalSeconds);
+                SetState(SyncState.Offline);
+            }
+            else
+            {
+                _logger.LogError(ex, "Sync cycle failed for pair {Id}", pair.Id);
+                SetState(SyncState.Error);
+            }
+            return false;
         }
+    }
+
+    private void MarkCycleSucceeded(SyncPair pair)
+    {
+        var previous = Interlocked.Exchange(ref _consecutiveCycleFailures, 0);
+        if (previous > 0)
+        {
+            _lastError = null;
+            _logger.LogInformation("Connection to Google Drive restored for pair {Id} after {N} failed cycle(s).", pair.Id, previous);
+            LogActivity(ActivityType.Info, "", details: "Back online - sync resumed");
+        }
+        SetState(SyncState.Idle);
     }
 
     // -------------------------------------------------------------------------
@@ -1041,10 +1162,15 @@ public sealed class SyncEngine : ISyncEngine
 
     private async Task HandleLocalDeleteAsync(ChangeEvent ev, SyncPair pair, CancellationToken ct)
     {
+        if (!SyncModePolicy.PropagatesLocalDeletes(pair))
+        {
+            _logger.LogDebug("Backup mode: local delete of '{Path}' is kept on Drive.", ev.RelativePath);
+            return;
+        }
         var baseline = await _stateStore.GetRecordAsync(pair.Id, SyncSide.Remote, ev.RelativePath);
         if (baseline is null)
         {
-            _logger.LogDebug("Local delete of '{Path}' has no remote baseline — nothing to propagate.", ev.RelativePath);
+            await TrySubmitFolderDeleteAsync(ev.RelativePath, pair, ct);
             return;
         }
 
@@ -1076,6 +1202,63 @@ public sealed class SyncEngine : ISyncEngine
         }
     }
 
+    /// <summary>
+    /// A local folder was deleted: trash the matching Drive folder too - but only when every file
+    /// inside it on Drive is one SyncIt knows (has a baseline), so nothing that never reached this PC
+    /// is thrown away. It goes through the deletion coordinator (grace period + mass-delete protection).
+    /// </summary>
+    private async Task TrySubmitFolderDeleteAsync(string relativePath, SyncPair pair, CancellationToken ct)
+    {
+        var abs = PathHelper.ToAbsolute(pair.LocalPath, relativePath);
+        if (Directory.Exists(abs) || IOFile.Exists(abs) || !Directory.Exists(pair.LocalPath))
+        {
+            _logger.LogDebug("Local delete of '{Path}' has no remote baseline - nothing to propagate.", relativePath);
+            return;
+        }
+
+        var folderId = pair.RemoteFolderId;
+        DriveFileLite? folder = null;
+        foreach (var seg in relativePath.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var f = await _driveService.FindFileAsync(folderId, seg, ct);
+            if (f?.Id is null || f.MimeType != "application/vnd.google-apps.folder") { folder = null; break; }
+            folder = new DriveFileLite(f.Id);
+            folderId = f.Id;
+        }
+        if (folder is null)
+        {
+            _logger.LogDebug("Local delete of '{Path}': no matching Drive folder.", relativePath);
+            return;
+        }
+
+        var prefix = relativePath.Replace('\\', '/').TrimEnd('/') + "/";
+        await foreach (var (file, rel) in _driveService.ListFilesWithPathsAsync(folder.Id, "", ct))
+        {
+            if (file.MimeType == "application/vnd.google-apps.folder") continue;
+            if (await _stateStore.GetRecordAsync(pair.Id, SyncSide.Remote, prefix + rel) is null &&
+                await _stateStore.GetRecordAsync(pair.Id, SyncSide.Local, prefix + rel) is null)
+            {
+                _logger.LogInformation("Not trashing Drive folder '{Path}': it contains '{File}' that was never synced to this PC.", relativePath, rel);
+                return;
+            }
+        }
+
+        await _deletionCoordinator.SubmitAsync(pair, new[]
+        {
+            new DeletionRecord
+            {
+                SyncPairId    = pair.Id,
+                RelativePath  = relativePath.Replace('\\', '/'),
+                Side          = SyncSide.Remote,
+                DriveFileId   = folder.Id,
+                TriggerReason = "FolderDeletedLocally",
+            },
+        }, ct);
+        LogActivity(ActivityType.FolderDeleted, relativePath, details: "Folder deleted on this PC - Drive folder queued for trash");
+    }
+
+    private sealed record DriveFileLite(string Id);
+
     // -------------------------------------------------------------------------
     // Remote change handlers
     // -------------------------------------------------------------------------
@@ -1086,6 +1269,7 @@ public sealed class SyncEngine : ISyncEngine
         SyncPair pair,
         CancellationToken ct)
     {
+        if (!SyncModePolicy.AllowsDownload(pair)) return; // backup only: Drive changes never touch the PC
         var localAbsPath = PathHelper.ToAbsolute(pair.LocalPath, relativePath);
 
         // Case-only rename on Drive ("notes.txt" -> "Notes.txt"): rename the local file too.
@@ -1184,6 +1368,7 @@ public sealed class SyncEngine : ISyncEngine
 
     private async Task HandleRemoteDeleteAsync(string driveFileId, SyncPair pair, CancellationToken ct)
     {
+        if (!SyncModePolicy.AllowsLocalDeleteFromRemote(pair)) return; // backup only: never delete on the PC
         // Find by driveFileId since we only have the ID, not the path
         var found = await _stateStore.GetRecordByDriveFileIdAsync(pair.Id, SyncSide.Remote, driveFileId);
         if (found is null) return;
@@ -1325,6 +1510,11 @@ public sealed class SyncEngine : ISyncEngine
         SyncPair pair,
         CancellationToken ct)
     {
+        if (!SyncModePolicy.AllowsDownload(pair))
+        {
+            _logger.LogDebug("Backup mode: not downloading '{Path}'.", relativePath);
+            return;
+        }
         var isGoogleAppsType = file.MimeType?.StartsWith("application/vnd.google-apps.", StringComparison.Ordinal) == true;
         var isFolder = file.MimeType == "application/vnd.google-apps.folder";
 
@@ -1518,6 +1708,9 @@ public sealed class SyncEngine : ISyncEngine
             BaselineRecord = baseline,
             RelativePath  = relativePath,
         });
+
+        if (SyncModePolicy.ForceLocalWins(pair) && action.Outcome is ConflictOutcome.UseRemote or ConflictOutcome.KeepBoth)
+            action = new ConflictResolutionAction { Outcome = ConflictOutcome.UseLocal, ReasonDescription = "Backup mode: the PC copy wins" };
 
         _logger.LogInformation("Conflict on '{Path}': {Outcome}", relativePath, action.Outcome);
 

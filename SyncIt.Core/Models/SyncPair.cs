@@ -23,8 +23,17 @@ public class SyncPair
     /// <summary>Shared drive ID when the remote folder lives in a shared drive; null = My Drive.</summary>
     public string? SharedDriveId { get; set; }
 
+    /// <summary>True when the user chose a specific remote folder as the pair root (1.4+); never migrated to the drive root.</summary>
+    public bool RemoteFolderPinned { get; set; }
+
     /// <summary>Paused pairs keep their state but do not sync until resumed.</summary>
     public bool Paused { get; set; }
+
+    /// <summary>Two-way sync (default) or one-way backup to Drive (1.4+).</summary>
+    public SyncMode Mode { get; set; } = SyncMode.TwoWay;
+
+    /// <summary>Backup mode only: when true (default) files deleted on this PC stay on Drive.</summary>
+    public bool BackupKeepDeletedOnDrive { get; set; } = true;
 
     /// <summary>Convert Google Docs/Sheets/Slides to Office formats when downloading.</summary>
     public bool ExportGoogleDocs { get; set; } = true;
@@ -63,4 +72,13 @@ public class SyncPair
     /// a selected subfolder are excluded from sync.
     /// </summary>
     public List<string> SelectedSubfolders { get; set; } = new();
+}
+
+/// <summary>Direction of a sync pair.</summary>
+public enum SyncMode
+{
+    /// <summary>Changes flow both ways.</summary>
+    TwoWay,
+    /// <summary>PC → Drive only. Nothing on the PC is ever downloaded, overwritten or deleted.</summary>
+    BackupOnly,
 }
