@@ -227,6 +227,22 @@ internal sealed class SettingsForm : Form
         Add(keepDeleted, ref y, 40);
         mode.SelectedIndexChanged += (_, _) => keepDeleted.Enabled = mode.Enabled && mode.SelectedIndex == 1;
 
+        var exportOn = new CheckBox { Text = "Download Google Docs, Sheets and Slides as files:", AutoSize = true };
+        Add(exportOn, ref y, 30);
+        ComboBox Fmt(IEnumerable<string> keys) { var c = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 90 }; c.Items.AddRange(keys.ToArray<object>()); return c; }
+        var docF = Fmt(GoogleDocExportMap.DocFormats.Keys); var sheetF = Fmt(GoogleDocExportMap.SheetFormats.Keys); var slideF = Fmt(GoogleDocExportMap.SlideFormats.Keys);
+        int x = 0;
+        foreach (var (lbl, combo) in new[] { ("Docs", docF), ("Sheets", sheetF), ("Slides", slideF) })
+        {
+            var l = new Label { Text = lbl, AutoSize = true, Location = new Point(x, y + 4) };
+            combo.Location = new Point(x + 52, y);
+            _page.Controls.Add(l); _page.Controls.Add(combo); x += 170;
+        }
+        y += 34;
+        var exportRo = new CheckBox { Text = "Make these copies read-only (edit them in Google; they are never uploaded back)", AutoSize = true };
+        Add(exportRo, ref y, 40);
+        exportOn.CheckedChanged += (_, _) => docF.Enabled = sheetF.Enabled = slideF.Enabled = exportRo.Enabled = exportOn.Enabled && exportOn.Checked;
+
         var save = Btn("Save folder settings", primary: true);
         var addFolder = Btn("Add folder…");
         save.Location = new Point(0, y);
@@ -249,6 +265,14 @@ internal sealed class SettingsForm : Form
             maxSize.Value = Math.Clamp(p.MaxFileSizeBytes / (1024 * 1024), 1, 5 * 1024 * 1024);
             keepDeleted.Checked = p.BackupKeepDeletedOnDrive;
             keepDeleted.Enabled = mode.SelectedIndex == 1;
+            exportOn.Enabled = !p.Encrypted;
+            exportOn.Checked = p.ExportGoogleDocs;
+            docF.SelectedItem = p.DocsExportFormat; sheetF.SelectedItem = p.SheetsExportFormat; slideF.SelectedItem = p.SlidesExportFormat;
+            if (docF.SelectedIndex < 0) docF.SelectedIndex = 0;
+            if (sheetF.SelectedIndex < 0) sheetF.SelectedIndex = 0;
+            if (slideF.SelectedIndex < 0) slideF.SelectedIndex = 0;
+            exportRo.Checked = p.ExportReadOnly;
+            docF.Enabled = sheetF.Enabled = slideF.Enabled = exportRo.Enabled = exportOn.Enabled && exportOn.Checked;
         }
         pairs.SelectedIndexChanged += (_, _) => Load();
         if (pairs.Items.Count > 0) pairs.SelectedIndex = 0; else Load();
@@ -262,6 +286,16 @@ internal sealed class SettingsForm : Form
             var modeChanged = PairSettingsEditor.ApplyMode(p, newMode, keepDeleted.Checked);
             var newMax = (long)maxSize.Value * 1024 * 1024;
             if (p.MaxFileSizeBytes != newMax) { p.MaxFileSizeBytes = newMax; modeChanged = true; }
+            if (!p.Encrypted)
+            {
+                string Sel(ComboBox c, string cur) => c.SelectedItem as string ?? cur;
+                var (d, s, sl) = (Sel(docF, p.DocsExportFormat), Sel(sheetF, p.SheetsExportFormat), Sel(slideF, p.SlidesExportFormat));
+                if (p.ExportGoogleDocs != exportOn.Checked || p.DocsExportFormat != d || p.SheetsExportFormat != s || p.SlidesExportFormat != sl || p.ExportReadOnly != exportRo.Checked)
+                {
+                    p.ExportGoogleDocs = exportOn.Checked; p.DocsExportFormat = d; p.SheetsExportFormat = s; p.SlidesExportFormat = sl; p.ExportReadOnly = exportRo.Checked;
+                    modeChanged = true;
+                }
+            }
             if (PairSettingsEditor.Apply(p, resolution, excludes.Text, paused.Checked) | modeChanged)
             {
                 _host.SaveConfig(_config);
@@ -355,6 +389,11 @@ internal sealed class SettingsForm : Form
         var notifyDeletes = new CheckBox { Text = "Notify me about deletions and mass-deletion protection", AutoSize = true, Checked = _config.NotifyDeletions };
         Add(notifyDeletes, ref y, 40);
 
+        Add(new Label { Text = "Experimental", Font = Theme.Body(11f, FontStyle.Bold), AutoSize = true }, ref y, 32);
+        var experimental = new CheckBox { Text = "Enable experimental features (beta): encrypted backup folders", AutoSize = true, Checked = _config.ExperimentalFeatures };
+        Add(experimental, ref y, 30);
+        Add(Hint("Encrypted folders are a one-way, client-side encrypted backup (Tools menu). Beta: keep another copy of important data."), ref y, 40);
+
         var save = Btn("Save", primary: true);
         save.Click += (_, _) =>
         {
@@ -363,6 +402,7 @@ internal sealed class SettingsForm : Form
             _config.ActiveHoursEnd = (int)to.Value;
             _config.NotifyConflicts = notifyConflicts.Checked;
             _config.NotifyDeletions = notifyDeletes.Checked;
+            _config.ExperimentalFeatures = experimental.Checked;
             _config.MaxUploadKBps = PairSettingsEditor.ClampBandwidth(up.Value);
             _config.MaxDownloadKBps = PairSettingsEditor.ClampBandwidth(down.Value);
             _host.SaveConfig(_config);

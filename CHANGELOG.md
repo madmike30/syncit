@@ -18,6 +18,14 @@
 - **Backup only mode per folder:** PC → Drive only; nothing on the PC is ever downloaded, overwritten or deleted; conflicts keep the PC copy; optionally keep files on Drive when they are deleted on the PC (default).
 - **Sync a My Drive folder directly:** when adding a folder you can type a Drive folder (e.g. `SyncIt-Test` or `Work/Docs`, created if missing) and the pair maps straight to it.
 - **Max file size per folder** in Settings → Folders (exclude patterns were already there; defaults skip `node_modules`, `.git`, `*.tmp`, `~$*`).
+- **Version history & restore.** Right-click a synced file in Explorer → SyncIt → **Version history…** lists its Drive versions; restoring writes the old content back (checksum-verified) after moving the current copy to the SyncIt trash. **Tools → Restore deleted files** lists items in the Drive trash that belonged to the folder and takes the ones you check out of the trash.
+- **Preview before the first sync.** Adding a folder shows how many files will upload, download, already match or differ - and that nothing is deleted - before you start it.
+- **Docs/Sheets/Slides export format per folder** (e.g. docx/odt/pdf, xlsx/ods/csv, pptx/odp/pdf), optional read-only copies; exported copies are never uploaded back.
+- **Folders on USB / external disks** are bound to that disk's volume serial: sync pauses with "Disk not connected" when it is unplugged and resumes when the same disk returns.
+- **Explorer right-click menu:** Copy Drive link, Open in Drive, Version history… (per user, removed on uninstall).
+- **Duplicate finder** (Tools): same folder + same name + identical MD5. You choose what goes to the Drive trash; the oldest or PC-linked copy is protected and at least one copy always stays.
+- **Encrypted backup folder - Experimental, beta** (off by default): one-way, client-side AES-256-GCM with encrypted names; see `docs/ENCRYPTION.md`.
+- Fixed: the second account's folder title showed grey instead of its account colour.
 ## 1.3.2 - 2026-10-24
 - **Errors from tray menu, dashboard links and Settings are always logged.** Actions started outside the normal window message loop (for example through Windows accessibility / UI Automation) could fail silently; they now go through the crash reporter (log + crash report + friendly message).
 

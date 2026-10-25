@@ -18,6 +18,15 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        // ─── Explorer right-click commands: hand over to the running instance ─────────
+        if (args.Length >= 3 && args[0] == "--shell")
+        {
+            if (!SyncIt.App.SyncItApp.ForwardShellCommand(args[1], args[2]))
+                MessageBox.Show("Start SyncIt first, then try again.", "SyncIt", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        if (args.Contains("--unregister-shell")) { SyncIt.App.SyncItApp.UnregisterExplorerMenu(); return; }
+
         // ─── Single instance ───────────────────────────────────────────────────────────
         var mutex = new Mutex(true, "Global\\SyncIt-SingleInstance", out var isFirst);
         if (!isFirst)

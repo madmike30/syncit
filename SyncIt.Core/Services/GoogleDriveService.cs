@@ -32,7 +32,7 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
     public static readonly TimeSpan MetadataAttemptTimeout = TimeSpan.FromSeconds(90);
 
     // Fields requested on every file list/get (keep minimal to reduce response size)
-    private const string FileFields = "id,name,mimeType,md5Checksum,size,modifiedTime,parents,trashed,headRevisionId";
+    private const string FileFields = "id,name,mimeType,md5Checksum,size,modifiedTime,createdTime,parents,trashed,headRevisionId";
     private const string ListFields = $"nextPageToken,files({FileFields})";
 
     public GoogleDriveService(UserCredential credential, ILogger<GoogleDriveService> logger)
@@ -190,6 +190,104 @@ public sealed class GoogleDriveService : IGoogleDriveService, IDisposable
             if (dlProgress.Status != Google.Apis.Download.DownloadStatus.Completed)
                 throw new IOException($"Download did not complete: {dlProgress.Status} — {dlProgress.Exception?.Message}");
         });
+    }
+
+    public async Task<IReadOnlyList<DriveRevisionInfo>> ListRevisionsAsync(string fileId, CancellationToken ct = default)
+    {
+        var list = new List<DriveRevisionInfo>();
+        string? token = null;
+        do
+        {
+            var request = _drive.Revisions.List(fileId);
+            request.Fields = "nextPageToken,revisions(id,modifiedTime,size,md5Checksum,keepForever)";
+            request.PageSize = 200;
+            if (token is not null) request.PageToken = token;
+            var result = await _retryPolicy.ExecuteAsync(() => request.ExecuteAsync(ct));
+            foreach (var r in result.Revisions ?? new List<Revision>())
+                list.Add(new DriveRevisionInfo(r.Id, r.ModifiedTimeDateTimeOffset?.UtcDateTime ?? DateTime.MinValue,
+                    r.Size ?? 0, r.Md5Checksum, r.KeepForever == true));
+            token = result.NextPageToken;
+        }
+        while (token is not null);
+        return list.OrderBy(r => r.ModifiedUtc).ToList();
+    }
+
+    public async Task DownloadRevisionAsync(string fileId, string revisionId, Stream destination, CancellationToken ct = default)
+    {
+        var request = _drive.Revisions.Get(fileId, revisionId);
+        await _downloadRetryPolicy.ExecuteAsync(async () =>
+        {
+            destination.SetLength(0);
+            var p = await request.DownloadAsync(destination, ct);
+            if (p.Status != Google.Apis.Download.DownloadStatus.Completed)
+                throw new IOException($"Revision download did not complete: {p.Status} — {p.Exception?.Message}");
+        });
+    }
+
+    public async Task<IReadOnlyList<DriveFile>> ListTrashedAsync(CancellationToken ct = default)
+    {
+        var list = new List<DriveFile>();
+        string? token = null;
+        do
+        {
+            var request = _drive.Files.List();
+            request.Q = SharedDriveId is null ? "trashed = true and 'me' in owners" : "trashed = true";
+            request.Fields = $"nextPageToken,files({FileFields},trashedTime)";
+            request.PageSize = 500;
+            DriveRequestScope.Apply(request, SharedDriveId);
+            if (token is not null) request.PageToken = token;
+            var result = await _retryPolicy.ExecuteAsync(() => request.ExecuteAsync(ct));
+            if (result.Files is not null) list.AddRange(result.Files);
+            token = result.NextPageToken;
+        }
+        while (token is not null);
+        return list;
+    }
+
+    public async Task<IReadOnlyList<(DriveFile File, string RelativePath)>> ListTreeAsync(string rootFolderId, CancellationToken ct = default)
+    {
+        var result = new List<(DriveFile, string)>();
+        var queue = new Queue<(string Id, string Path)>();
+        queue.Enqueue((rootFolderId, ""));
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        while (queue.Count > 0)
+        {
+            var (id, path) = queue.Dequeue();
+            if (!seen.Add(id)) continue;
+            string? token = null;
+            do
+            {
+                ct.ThrowIfCancellationRequested();
+                var request = _drive.Files.List();
+                request.Q = $"'{id.Replace("'", "\\'")}' in parents and trashed = false";
+                request.Fields = $"nextPageToken,files({FileFields})";
+                request.PageSize = 1000;
+                DriveRequestScope.Apply(request, SharedDriveId);
+                if (token is not null) request.PageToken = token;
+                var page = await _retryPolicy.ExecuteAsync(() => request.ExecuteAsync(ct));
+                foreach (var f in page.Files ?? new List<DriveFile>())
+                {
+                    var rel = path.Length == 0 ? f.Name : path + "/" + f.Name;
+                    result.Add((f, rel));
+                    if (f.MimeType == "application/vnd.google-apps.folder" && f.Id is not null) queue.Enqueue((f.Id, rel));
+                }
+                token = page.NextPageToken;
+            }
+            while (token is not null);
+        }
+        return result;
+    }
+
+    public async Task UntrashFileAsync(string fileId, CancellationToken ct = default)
+    {
+        await _retryPolicy.ExecuteAsync(() =>
+        {
+            var request = _drive.Files.Update(new DriveFile { Trashed = false }, fileId);
+            DriveRequestScope.Apply(request, SharedDriveId);
+            request.Fields = "id,trashed";
+            return request.ExecuteAsync(ct);
+        });
+        _logger.LogInformation("Restored Drive file {FileId} from trash", fileId);
     }
 
     public async Task ExportGoogleDocAsync(string fileId, string exportMimeType, Stream destination, CancellationToken ct = default)

@@ -82,4 +82,10 @@ public class SyncConfig
 
     /// <summary>Windows notification when files are deleted or mass-deletion protection triggers (1.4+).</summary>
     public bool NotifyDeletions { get; set; } = true;
+
+    /// <summary>Show "SyncIt" (Copy Drive link, Open in Drive, Version history) in the Explorer right-click menu.</summary>
+    public bool ExplorerContextMenu { get; set; } = true;
+
+    /// <summary>Turns on Experimental features (encrypted backup folders).</summary>
+    public bool ExperimentalFeatures { get; set; }
 }

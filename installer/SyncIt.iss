@@ -59,6 +59,10 @@ Filename: "{app}\SyncIt.exe"; Flags: nowait; Check: ShouldRelaunch
 
 ; Settings and tokens in %APPDATA%\SyncIt are kept on uninstall on purpose (your sync state).
 
+[UninstallRun]
+; Remove the Explorer right-click "SyncIt" commands (registered per user by the app).
+Filename: "{app}\SyncIt.exe"; Parameters: "--unregister-shell"; Flags: runhidden skipifdoesntexist; RunOnceId: "UnregisterShell"
+
 [Code]
 function ShouldRelaunch: Boolean;
 begin

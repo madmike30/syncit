@@ -5,7 +5,7 @@ _Last updated: 24 October 2026_
 SyncIt is a free, open-source Windows app that keeps a folder on your PC in sync with a folder in your Google Drive. This policy explains what happens with your data. Short version: **your data stays between your PC and your Google account. We don't collect anything.**
 
 ## Who we are
-SyncIt is maintained by SyncIt contributors as an open-source project: <https://github.com/madmike30/syncit>. There is no company or server behind it.
+SyncIt is maintained by madmike30 as an open-source project: <https://github.com/madmike30/syncit>. There is no company or server behind it.
 
 ## What SyncIt accesses
 When you click **Sign in with Google** and approve, SyncIt gets permission (the Google Drive scope `https://www.googleapis.com/auth/drive`) to:

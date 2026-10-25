@@ -26,6 +26,26 @@ public class SyncPair
     /// <summary>True when the user chose a specific remote folder as the pair root (1.4+); never migrated to the drive root.</summary>
     public bool RemoteFolderPinned { get; set; }
 
+    /// <summary>Export format for Google Docs: "docx" (default), "odt", "pdf", "rtf", "txt".</summary>
+    public string DocsExportFormat { get; set; } = "docx";
+    /// <summary>Export format for Google Sheets: "xlsx" (default), "ods", "pdf", "csv".</summary>
+    public string SheetsExportFormat { get; set; } = "xlsx";
+    /// <summary>Export format for Google Slides: "pptx" (default), "odp", "pdf".</summary>
+    public string SlidesExportFormat { get; set; } = "pptx";
+    /// <summary>Mark exported Google files read-only on this PC (default). They are never uploaded back.</summary>
+    public bool ExportReadOnly { get; set; } = true;
+
+    /// <summary>Volume serial of the disk this folder lives on (removable/external drives, 1.4+). Null = any.</summary>
+    public string? VolumeSerial { get; set; }
+
+    /// <summary>Encrypted backup folder (Experimental, 1.4+): files are encrypted on this PC before upload.</summary>
+    public bool Encrypted { get; set; }
+    /// <summary>Encrypted folder: PBKDF2 salt (base64). Not secret.</summary>
+    public string? EncryptionSalt { get; set; }
+    /// <summary>Encrypted folder: passphrase verifier (base64 HMAC). Not the key.</summary>
+    public string? EncryptionVerifier { get; set; }
+    public int EncryptionIterations { get; set; } = 600_000;
+
     /// <summary>Paused pairs keep their state but do not sync until resumed.</summary>
     public bool Paused { get; set; }
 

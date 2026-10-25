@@ -73,10 +73,30 @@ public sealed class SyncEngine : ISyncEngine
     private bool _outsideHoursReported;
 
     /// <summary>True while paused by the user or outside the configured active hours.</summary>
+    /// <summary>Volume lookup (swappable in tests).</summary>
+    public static IVolumeInfo Volumes { get; set; } = new WindowsVolumeInfo();
+    private bool _diskMissingReported;
+
     private bool IsHeld()
     {
         if (Volatile.Read(ref _paused) == 1) return true;
         if (_localRootMissing) return true;
+        if (!RemovableDrives.IsAvailable(_pair, Volumes))
+        {
+            if (!_diskMissingReported)
+            {
+                _diskMissingReported = true;
+                _logger.LogInformation("Disk for pair {Id} is not connected (volume {Serial}) - sync waits for it.", _pair.Id, _pair.VolumeSerial);
+                SetState(SyncState.Paused, "Disk not connected");
+            }
+            return true;
+        }
+        if (_diskMissingReported)
+        {
+            _diskMissingReported = false;
+            _logger.LogInformation("Disk for pair {Id} connected - sync resumes.", _pair.Id);
+            SetState(SyncState.Idle);
+        }
         var active = SyncSchedule.IsActive(_config, LocalNow());
         if (!active && !_outsideHoursReported)
         {
@@ -1042,6 +1062,14 @@ public sealed class SyncEngine : ISyncEngine
 
         var baseline = await _stateStore.GetRecordAsync(pair.Id, SyncSide.Remote, ev.RelativePath);
 
+        // Exported Google Docs/Sheets/Slides are copies of a Google file: never upload them back
+        // (that would create a duplicate next to the real Google file). Edit them in Google instead.
+        if (ExportedFiles.IsExportOf(baseline) && ev.Kind != ChangeKind.Renamed)
+        {
+            _logger.LogInformation("Not uploading '{Path}': it is an exported copy of a Google file (edit it in Google Drive).", ev.RelativePath);
+            return;
+        }
+
         if (ev.Kind == ChangeKind.Renamed && ev.OldRelativePath is not null
             && await _stateStore.GetRecordAsync(pair.Id, SyncSide.Remote, ev.OldRelativePath) is { DriveFileId: not null } movedBaseline)
         {
@@ -1542,7 +1570,7 @@ public sealed class SyncEngine : ISyncEngine
         string outputPath = localPath;
         string? exportMime = null;
 
-        if (GoogleDocExportMap.TryGetExport(file.MimeType, out exportMime, out var ext))
+        if (GoogleDocExportMap.TryGetExport(file.MimeType, pair, out exportMime, out var ext))
         {
             if (!pair.ExportGoogleDocs)
             {
@@ -1574,7 +1602,9 @@ public sealed class SyncEngine : ISyncEngine
                 using var ms = new MemoryStream();
                 await _driveService.ExportGoogleDocAsync(file.Id, exportMime, ms, ct);
                 ms.Position = 0;
+                ExportedFiles.ClearReadOnly(outputPath); // a read-only target would block the replace
                 await _atomicWriter.WriteAsync(ms, outputPath, null, file.ModifiedTimeDateTimeOffset?.UtcDateTime, ct);
+                if (pair.ExportReadOnly) ExportedFiles.MarkReadOnly(outputPath);
             }
             else if (totalBytes > 5 * 1024 * 1024)
             {
@@ -1850,9 +1880,9 @@ public sealed class SyncEngine : ISyncEngine
             MimeType      = file.MimeType,
         };
 
-    private static string GetRemoteSyncRelativePath(Google.Apis.Drive.v3.Data.File file, string relativePath)
+    private string GetRemoteSyncRelativePath(Google.Apis.Drive.v3.Data.File file, string relativePath)
     {
-        if (GoogleDocExportMap.TryGetExport(file.MimeType, out _, out var ext))
+        if (GoogleDocExportMap.TryGetExport(file.MimeType, _pair, out _, out var ext))
             return (relativePath.EndsWith(ext, StringComparison.OrdinalIgnoreCase)
                 ? relativePath
                 : relativePath + ext).Replace('\\', '/');

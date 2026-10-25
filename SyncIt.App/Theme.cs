@@ -79,6 +79,8 @@ internal static class Theme
                 l.LinkBehavior = LinkBehavior.HoverUnderline;
                 l.BackColor = Color.Transparent;
                 break;
+            case Label l when Equals(l.Tag, KeepColors):
+                break; // account colours etc. are already chosen for both themes
             case Label l:
                 l.ForeColor = MapFore(l.ForeColor);
                 if (l.BackColor != Color.Transparent) l.BackColor = MapBack(l.BackColor);
@@ -216,6 +218,9 @@ internal static class Theme
         if (l >= 0.80f) return SurfaceAlt;
         return c;
     }
+
+    /// <summary>Put this in a control's Tag to keep its own colours.</summary>
+    public const string KeepColors = "keep-colors";
 
     public static Color MapFore(Color c)
     {

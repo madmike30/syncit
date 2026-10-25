@@ -116,7 +116,22 @@ public interface IGoogleDriveService
 
     /// <summary>Rename and/or move a Drive item in place (keeps its ID, history and sharing).</summary>
     Task<DriveFile> MoveFileAsync(string fileId, string newName, string newParentId, CancellationToken ct = default);
+
+    // ── 1.4: version history, Drive trash ─────────────────────────────────
+    /// <summary>Stored revisions of a binary file, oldest first.</summary>
+    Task<IReadOnlyList<DriveRevisionInfo>> ListRevisionsAsync(string fileId, CancellationToken ct = default);
+    /// <summary>Downloads one revision's content.</summary>
+    Task DownloadRevisionAsync(string fileId, string revisionId, Stream destination, CancellationToken ct = default);
+    /// <summary>Files and folders in the Drive trash (owned by the user / in this shared drive).</summary>
+    Task<IReadOnlyList<DriveFile>> ListTrashedAsync(CancellationToken ct = default);
+    /// <summary>Takes a file out of the Drive trash.</summary>
+    Task UntrashFileAsync(string fileId, CancellationToken ct = default);
+    /// <summary>Every non-trashed file and folder below <paramref name="rootFolderId"/> with its relative path.</summary>
+    Task<IReadOnlyList<(DriveFile File, string RelativePath)>> ListTreeAsync(string rootFolderId, CancellationToken ct = default);
 }
+
+/// <summary>One stored revision of a Drive file.</summary>
+public sealed record DriveRevisionInfo(string Id, DateTime ModifiedUtc, long SizeBytes, string? Md5, bool KeepForever);
 
 /// <summary>Drive subfolder descriptor returned by ListSubfoldersAsync.</summary>
 public record DriveSubfolderInfo(string Name, string RelativePath, string DriveId);

@@ -16,6 +16,11 @@ A lightweight, bidirectional Google Drive sync tool for Windows. Keep a local fo
 | **Settings → General (startup, bandwidth, schedule, notifications)** | **Add folder → account and drive** |
 | ![Settings general](docs/images/settings-general-light.png) | ![Add folder location](docs/images/add-folder-location-light.png) |
 
+| **Preview before the first sync** | **Version history & restore** |
+| ![Preview](docs/images/preview-first-sync-light.png) | ![Version history](docs/images/version-history-light.png) |
+| **Duplicate finder** | **Encrypted backup folder (beta)** |
+| ![Duplicates](docs/images/duplicates-light.png) | ![Encrypted passphrase](docs/images/encrypted-passphrase-light.png) |
+
 | Sign-in |
 |---|
 | ![Sign in](docs/images/sign-in-light.png) |
@@ -41,7 +46,15 @@ A lightweight, bidirectional Google Drive sync tool for Windows. Keep a local fo
 - **Pause per folder or per account**, and a **sync schedule** (active hours)
 - **Backup only mode** — PC → Drive, never changes files on the PC; optionally keep deleted files on Drive
 - **Notifications** for conflicts, deletions and mass-deletion protection (can be turned off)
-- **Map a folder to any My Drive folder** (e.g. `My Drive / Work`), not only the drive root`n- **System tray UI** — icon states, account info, storage bar, recent activity, and detailed status window
+- **Map a folder to any My Drive folder** (e.g. `My Drive / Work`), not only the drive root
+- **Version history & restore** — right-click a synced file → SyncIt → **Version history…** to restore an older Drive version (the current copy goes to the SyncIt trash first); **Tools → Restore deleted files** takes items out of the Drive trash
+- **Preview before the first sync** — a new folder shows how many files will upload, download, already match or conflict (and that nothing is deleted) before you start it
+- **Docs/Sheets/Slides export per folder** — choose docx/odt/pdf/…, xlsx/ods/csv/…, pptx/odp/pdf; copies can be read-only and are never uploaded back as duplicates
+- **Folders on USB / external disks** — tied to that disk's volume serial: syncing pauses when it is unplugged and resumes when the same disk comes back (another stick on the same letter is ignored)
+- **Explorer right-click** — **Copy Drive link**, **Open in Drive**, **Version history…**
+- **Duplicate finder** — Tools → Find duplicates: same folder + same name + identical content (MD5); you check what goes to the Drive trash, the oldest/linked copy is protected, nothing is automatic
+- **Encrypted backup folder (Experimental, beta)** — one-way backup encrypted on your PC (AES-256-GCM, encrypted names, PBKDF2-SHA256 600k key, passphrase kept with DPAPI); see [docs/ENCRYPTION.md](docs/ENCRYPTION.md)
+- **System tray UI** — icon states, account info, storage bar, recent activity, and detailed status window
 - **Secure credentials** — OAuth2 tokens encrypted with DPAPI; client secrets stored in Windows Credential Manager
 
 ## Why SyncIt vs Google Drive for desktop
@@ -67,6 +80,13 @@ Google Drive for desktop is the right choice for most people. SyncIt is for peop
 | Notifications for conflicts and deletions (switchable) | ✅ | Partial |
 | Portable (no install) option | ✅ portable zip | ❌ |
 | Open source (MIT), no SyncIt server | ✅ | ❌ |
+| **Preview (dry run)** of a folder's first sync | ✅ | ❌ |
+| **Restore an older version / deleted file** from the PC | ✅ right-click → Version history, Tools → Restore deleted | Web only (drive.google.com) |
+| **Docs/Sheets/Slides format per folder** (docx/odt/pdf/xlsx/csv/pptx…) | ✅ | ❌ |
+| **USB / external disk folders** that pause when unplugged | ✅ (bound to the disk's serial) | ❌ (external disks only as "Computers" backup) |
+| Explorer **Copy Drive link / Open in Drive** | ✅ | ✅ |
+| **Duplicate finder** (same folder, name and MD5; you choose) | ✅ | ❌ |
+| **Client-side encrypted backup** (Google can't read it) | ✅ Experimental | ❌ |
 | Google Photos, streaming/virtual drive, macOS | ❌ | ✅ |
 
 Limits to know: Windows only; no streaming mode; the built-in sign-in is not verified by Google yet, so Google shows an "unverified app" screen and limits new users (the optional own-client setup avoids both).
@@ -149,6 +169,7 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full config reference
 - [Test Plan](docs/TEST-PLAN.md) — QA test matrix
 - [Google OAuth setup](docs/SETUP-GOOGLE-OAUTH.md) — sign-in, plus optional own-client setup
 - [Maintainer: Google Cloud setup](docs/GOOGLE-CLOUD-SETUP-FOR-MAINTAINER.md) — built-in client, limits, verification
+- [Encrypted folders (beta)](docs/ENCRYPTION.md) — scheme, threat model, limits
 - [Roadmap](docs/ROADMAP.md) — what's next
 - [Releasing](docs/RELEASING.md) — tags, draft releases, signing options
 - [Privacy Policy](docs/PRIVACY.md) · [Terms of Use](docs/TERMS.md)

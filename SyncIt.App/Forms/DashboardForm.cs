@@ -505,6 +505,7 @@ public sealed class DashboardForm : Form
                 Text      = "Google Drive · " + (pair.AccountEmail ?? "no account"),
                 Font      = new Font("Segoe UI", 10f, FontStyle.Bold),
                 ForeColor = accColor,
+                Tag       = Theme.KeepColors,
                 AutoSize  = true,
                 Location  = new Point(28, 8),
                 MaximumSize = new Size(Math.Max(120, card.Width - 250), 0),

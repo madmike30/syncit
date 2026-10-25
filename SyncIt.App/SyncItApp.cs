@@ -19,7 +19,7 @@ namespace SyncIt.App;
 /// direct in-memory communication (no IPC, no child processes).
 /// </summary>
 [SupportedOSPlatform("windows10.0.19041.0")]
-public sealed class SyncItApp : ApplicationContext
+public sealed partial class SyncItApp : ApplicationContext
 {
     internal static readonly string ConfigPath =
         PathHelper.Expand(@"%APPDATA%\SyncIt\syncit.json");
@@ -603,6 +603,7 @@ public sealed class SyncItApp : ApplicationContext
         {
             if (only is not null && !only.Contains(pair.Id)) continue;
             lock (_enginesLock) { if (_engines.Any(e => e.PairId == pair.Id)) continue; } // never two engines per pair
+            if (pair.Encrypted) { StartEncryptedBackup(pair); continue; } // Experimental: separate one-way runner
             var pairDrive = ResolveDrive(pair);
             if (pairDrive is null)
             {
@@ -707,8 +708,49 @@ public sealed class SyncItApp : ApplicationContext
 
     private async Task StopEnginesCoreAsync() => await StopEnginesCoreAsync(null);
 
+    // ── Experimental: encrypted backup folders ─────────────────────────────
+    public static string VaultDir => PathHelper.Expand(@"%APPDATA%\SyncIt\vault");
+    private readonly Dictionary<string, CancellationTokenSource> _encryptedRuns = new();
+
+    private void StartEncryptedBackup(SyncPair pair)
+    {
+        if (!_config.ExperimentalFeatures) { _logger.LogInformation("Encrypted pair {Id} skipped: Experimental features are off.", pair.Id); return; }
+        var drive = ResolveDrive(pair);
+        var crypto = SyncIt.Core.Crypto.VaultPassphraseStore.Open(VaultDir, pair);
+        if (drive is null || crypto is null) { _logger.LogWarning("Encrypted pair {Id} skipped: account or passphrase missing.", pair.Id); return; }
+        lock (_encryptedRuns) { if (_encryptedRuns.ContainsKey(pair.Id)) return; _encryptedRuns[pair.Id] = new CancellationTokenSource(); }
+        var cts = _encryptedRuns[pair.Id];
+        var runner = new SyncIt.Core.Crypto.EncryptedBackupRunner(drive, crypto, Path.Combine(VaultDir, pair.Id + ".manifest.json"), CreateLogger<SyncIt.Core.Crypto.EncryptedBackupRunner>());
+        var filter = new GlobFilter();
+        _logger.LogInformation("Starting encrypted backup (beta) {Id}: {Local} -> {Remote}", pair.Id, pair.LocalPath, AccountColors.RemoteLocation(pair));
+        _ = Task.Run(async () =>
+        {
+            while (!cts.IsCancellationRequested)
+            {
+                try
+                {
+                    var held = pair.Paused || _globalPaused || AccountRegistry.ForPair(_config, pair)?.Paused == true
+                               || !SyncSchedule.IsActive(_config, DateTime.Now) || !RemovableDrives.IsAvailable(pair, SyncEngine.Volumes)
+                               || !Directory.Exists(PathHelper.Expand(pair.LocalPath));
+                    if (!held) await runner.BackupAsync(PathHelper.Expand(pair.LocalPath), pair.RemoteFolderId, p => filter.IsIncluded(p, pair), cts.Token);
+                }
+                catch (OperationCanceledException) { break; }
+                catch (Exception ex) { _logger.LogWarning(ex, "Encrypted backup cycle failed for {Id}", pair.Id); }
+                try { await Task.Delay(TimeSpan.FromMinutes(5), cts.Token); } catch (OperationCanceledException) { break; }
+            }
+        });
+    }
+
+    private void StopEncryptedBackups(ISet<string>? only)
+    {
+        lock (_encryptedRuns)
+            foreach (var id in _encryptedRuns.Keys.Where(k => only is null || only.Contains(k)).ToList())
+            { _encryptedRuns[id].Cancel(); _encryptedRuns.Remove(id); }
+    }
+
     private async Task StopEnginesCoreAsync(ISet<string>? only)
     {
+        StopEncryptedBackups(only);
         // Snapshot under lock to avoid races with concurrent Add/reads
         SyncEngine[] engines;
         DeletionCoordinator[] coordinators;
@@ -878,6 +920,15 @@ public sealed class SyncItApp : ApplicationContext
         _menu.Items.Add("Accounts...",        null, (_, _) => ShowSettings("Accounts"));
         _menu.Items.Add("Add Google account...", null, async (_, _) => await UiGuard.RunAsync(AddAccountAsync, "AddAccount"));
         _menu.Items.Add("Settings...",        null, (_, _) => ShowSettings());
+        var tools = new ToolStripMenuItem("Tools");
+        tools.DropDownItems.Add("Restore deleted files...", null, (_, _) => UiGuard.Run(() => ShowHistory(null), "History"));
+        tools.DropDownItems.Add("Find duplicates on Drive...", null, (_, _) => UiGuard.Run(ShowDuplicates, "Duplicates"));
+        tools.DropDownItems.Add(new ToolStripSeparator());
+        _encryptedAddItem = new ToolStripMenuItem("Add encrypted backup folder (beta)...", null, (_, _) => UiGuard.Run(AddEncryptedFolder, "AddEncrypted"));
+        _encryptedRestoreItem = new ToolStripMenuItem("Restore encrypted backup (beta)...", null, async (_, _) => await UiGuard.RunAsync(RestoreEncryptedAsync, "RestoreEncrypted"));
+        tools.DropDownItems.Add(_encryptedAddItem); tools.DropDownItems.Add(_encryptedRestoreItem);
+        tools.DropDownOpening += (_, _) => { _encryptedAddItem.Visible = _encryptedRestoreItem.Visible = _config.ExperimentalFeatures; };
+        _menu.Items.Add(tools);
         _updateItem = new ToolStripMenuItem("Install update...", null, async (_, _) => await UiGuard.RunAsync(InstallUpdateAsync, "InstallUpdate")) { Visible = false };
         _menu.Items.Add(_updateItem);
         _menu.Items.Add(new ToolStripSeparator());
@@ -1276,6 +1327,9 @@ public sealed class SyncItApp : ApplicationContext
                 }
             }
             var pickerDrive = ResolveDrive(pair) ?? _driveService;
+            RemovableDrives.Bind(pair, SyncEngine.Volumes);
+            if (pair.VolumeSerial is not null)
+                _logger.LogInformation("Pair {Id} is on a separate disk (volume {Serial}); it syncs only while that disk is connected.", pair.Id, pair.VolumeSerial);
             _suppressConfigReload = true;
             try
             {
@@ -1285,10 +1339,7 @@ public sealed class SyncItApp : ApplicationContext
                 using (var form = new SelectFoldersForm(pair, ConfigPath, pickerDrive))
                     form.ShowDialog();
 
-                var start = MessageBox.Show(
-                    $"Start syncing now?\n\n{selectedPath}  <->  {pair.RemoteFolderName}\n\n" +
-                    "Files that already exist on both sides are matched by name and content; they are not copied again.",
-                    "SyncIt", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                var start = ConfirmFirstSync(pair, selectedPath, pickerDrive);
 
                 config = JsonSerializer.Deserialize<SyncConfig>(File.ReadAllText(ConfigPath), JsonOpts) ?? config;
                 var saved = config.SyncPairs.FirstOrDefault(p => p.Id == pair.Id);
@@ -1448,6 +1499,9 @@ public sealed class SyncItApp : ApplicationContext
         // 11. Restart status push loop
         _ = Task.Run(() => StatusPushLoopAsync(ct));
         HookConnectivityEvents();
+        StartShellCommandServer();
+        try { RegisterExplorerMenu(Environment.ProcessPath ?? Application.ExecutablePath); }
+        catch (Exception ex) { _logger.LogWarning(ex, "Explorer menu registration failed."); }
 
         _logger.LogInformation("Account switched to {Email}", _accountInfo.Email);
     }
