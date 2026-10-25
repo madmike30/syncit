@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.4.1 - 2026-10-25
 - Fixed: deleting a folder on the PC did not trash the matching Drive folder in the live app (folder lookup skipped Google folder types). Same fix for Explorer "Copy Drive link" on folders. Found in a live two-account test.
 
 ## 1.4.0 - 2026-10-25
